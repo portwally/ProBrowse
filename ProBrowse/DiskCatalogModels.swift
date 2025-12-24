@@ -14,6 +14,7 @@ struct DiskCatalogEntry: Identifiable, Codable {
     let name: String
     let fileType: UInt8
     let fileTypeString: String
+    let auxType: UInt16
     let size: Int
     let blocks: Int?
     let loadAddress: Int?
@@ -23,11 +24,12 @@ struct DiskCatalogEntry: Identifiable, Codable {
     let isDirectory: Bool
     let children: [DiskCatalogEntry]?
     
-    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?) {
+    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, auxType: UInt16 = 0, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?) {
         self.id = id
         self.name = name
         self.fileType = fileType
         self.fileTypeString = fileTypeString
+        self.auxType = auxType
         self.size = size
         self.blocks = blocks
         self.loadAddress = loadAddress

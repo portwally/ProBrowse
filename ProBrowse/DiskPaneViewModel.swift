@@ -16,6 +16,8 @@ class DiskPaneViewModel: ObservableObject {
     @Published var expandAllTrigger = false
     @Published var showingFilePicker = false
     
+    private var lastSelectedEntry: DiskCatalogEntry?
+    
     var isAllSelected: Bool {
         guard let catalog = catalog else { return false }
         let allIds = Set(catalog.allEntries.map { $0.id })
@@ -63,26 +65,63 @@ class DiskPaneViewModel: ObservableObject {
         return selectedEntries.contains(entry.id)
     }
     
-    func toggleSelection(_ entry: DiskCatalogEntry) {
-        if selectedEntries.contains(entry.id) {
-            selectedEntries.remove(entry.id)
-            
-            // Deselect children
-            if let children = entry.children {
-                for child in children {
-                    deselectRecursive(child)
-                }
+    func toggleSelection(_ entry: DiskCatalogEntry, commandPressed: Bool = false, shiftPressed: Bool = false) {
+        print("🔘 Toggle selection for: \(entry.name)")
+        print("   Current selected count: \(selectedEntries.count)")
+        print("   Command: \(commandPressed), Shift: \(shiftPressed)")
+        
+        if shiftPressed {
+            // Shift: Range selection from last selected to this one
+            handleRangeSelection(entry)
+        } else if commandPressed {
+            // Command: Toggle individual item
+            if selectedEntries.contains(entry.id) {
+                selectedEntries.remove(entry.id)
+                print("   ➖ Deselected")
+            } else {
+                selectedEntries.insert(entry.id)
+                print("   ➕ Selected")
             }
         } else {
+            // No modifier: Replace selection with this item
+            selectedEntries.removeAll()
             selectedEntries.insert(entry.id)
-            
-            // Select children
+            print("   ➕ Selected (cleared others)")
+        }
+        
+        print("   New selected count: \(selectedEntries.count)")
+        lastSelectedEntry = entry
+    }
+    
+    private func handleRangeSelection(_ entry: DiskCatalogEntry) {
+        guard let catalog = catalog, let lastSelected = lastSelectedEntry else {
+            selectedEntries.insert(entry.id)
+            return
+        }
+        
+        // Get flat list of all entries
+        let allEntries = flattenEntries(catalog.entries)
+        
+        guard let startIndex = allEntries.firstIndex(where: { $0.id == lastSelected.id }),
+              let endIndex = allEntries.firstIndex(where: { $0.id == entry.id }) else {
+            return
+        }
+        
+        let range = min(startIndex, endIndex)...max(startIndex, endIndex)
+        for i in range {
+            selectedEntries.insert(allEntries[i].id)
+        }
+    }
+    
+    private func flattenEntries(_ entries: [DiskCatalogEntry]) -> [DiskCatalogEntry] {
+        var result: [DiskCatalogEntry] = []
+        for entry in entries {
+            result.append(entry)
             if let children = entry.children {
-                for child in children {
-                    selectRecursive(child)
-                }
+                result.append(contentsOf: flattenEntries(children))
             }
         }
+        return result
     }
     
     private func selectRecursive(_ entry: DiskCatalogEntry) {
@@ -118,8 +157,17 @@ class DiskPaneViewModel: ObservableObject {
     }
     
     func getSelectedEntries() -> [DiskCatalogEntry] {
-        guard let catalog = catalog else { return [] }
-        return catalog.allEntries.filter { selectedEntries.contains($0.id) }
+        guard let catalog = catalog else {
+            print("⚠️ getSelectedEntries: No catalog")
+            return []
+        }
+        
+        let result = catalog.allEntries.filter { selectedEntries.contains($0.id) }
+        print("📋 getSelectedEntries: \(result.count) of \(selectedEntries.count) IDs")
+        for entry in result {
+            print("   - \(entry.name)")
+        }
+        return result
     }
     
     // MARK: - Export to Finder
@@ -178,7 +226,7 @@ class DiskPaneViewModel: ObservableObject {
     // MARK: - Import Files
     
     func importFile(from url: URL) {
-        guard let catalog = catalog,
+        guard catalog != nil,
               let imagePath = diskImagePath else { return }
         
         guard url.startAccessingSecurityScopedResource() else {
@@ -189,20 +237,28 @@ class DiskPaneViewModel: ObservableObject {
         defer { url.stopAccessingSecurityScopedResource() }
         
         do {
-            let data = try Data(contentsOf: url)
+            let fileData = try Data(contentsOf: url)
             let filename = url.lastPathComponent
             
-            // Use Cadius to add file
-            CadiusManager.shared.addFile(
-                diskImage: imagePath,
-                filePath: url,
-                fileName: filename
-            ) { success in
+            print("📋 Importing file: \(filename) (\(fileData.count) bytes)")
+            
+            // Use native ProDOS writer to add file
+            // Default to BIN ($06) file type with aux 0x0000
+            ProDOSWriter.shared.addFile(
+                diskImagePath: imagePath,
+                fileName: filename,
+                fileData: fileData,
+                fileType: 0x06,  // BIN
+                auxType: 0x0000
+            ) { success, message in
                 if success {
+                    print("✅ File imported successfully")
                     // Reload disk image
                     DispatchQueue.main.async {
                         self.loadDiskImage(from: imagePath)
                     }
+                } else {
+                    print("❌ Failed to import: \(message)")
                 }
             }
             
@@ -215,22 +271,57 @@ class DiskPaneViewModel: ObservableObject {
         guard let targetImagePath = diskImagePath,
               let sourceImagePath = sourceVM.diskImagePath else { return }
         
-        // Use Cadius to copy files between images
-        for entry in entries where !entry.isDirectory {
-            CadiusManager.shared.copyFile(
-                from: sourceImagePath,
-                to: targetImagePath,
-                fileName: entry.name
-            ) { success in
-                if success {
-                    print("Copied \(entry.name)")
-                }
+        print("📋 Copying files using native ProDOS writer...")
+        
+        // Copy files sequentially to avoid race conditions
+        copyNextFile(entries: entries, index: 0, from: sourceImagePath, to: targetImagePath)
+    }
+    
+    private func copyNextFile(entries: [DiskCatalogEntry], index: Int, from sourceImagePath: URL, to targetImagePath: URL) {
+        guard index < entries.count else {
+            // All files copied - reload
+            print("✅ All files copied, reloading...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.loadDiskImage(from: targetImagePath)
             }
+            return
         }
         
-        // Reload after all copies
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            self.loadDiskImage(from: targetImagePath)
+        let entry = entries[index]
+        guard !entry.isDirectory else {
+            // Skip directories, move to next
+            copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+            return
+        }
+        
+        // Extract from source
+        ProDOSWriter.shared.extractFile(diskImagePath: sourceImagePath, fileName: entry.name) { extractSuccess, fileData in
+            guard extractSuccess, let data = fileData else {
+                print("❌ Failed to extract \(entry.name)")
+                // Continue with next file
+                self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                return
+            }
+            
+            print("✅ Extracted \(entry.name) (\(data.count) bytes)")
+            
+            // Add to target
+            ProDOSWriter.shared.addFile(
+                diskImagePath: targetImagePath,
+                fileName: entry.name,
+                fileData: data,
+                fileType: entry.fileType,
+                auxType: entry.auxType
+            ) { addSuccess, message in
+                if addSuccess {
+                    print("✅ Copied \(entry.name)")
+                } else {
+                    print("❌ Failed to add \(entry.name): \(message)")
+                }
+                
+                // Continue with next file
+                self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+            }
         }
     }
 }

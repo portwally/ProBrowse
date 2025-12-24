@@ -10,13 +10,13 @@ import SwiftUI
 struct CatalogEntryRow: View {
     let entry: DiskCatalogEntry
     let isSelected: (DiskCatalogEntry) -> Bool
-    let onToggle: (DiskCatalogEntry) -> Void
+    let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void  // entry, command, shift
     let level: Int
     let expandAllTrigger: Bool
     
     @State private var isExpanded: Bool
     
-    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry) -> Void, level: Int, expandAllTrigger: Bool) {
+    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, level: Int, expandAllTrigger: Bool) {
         self.entry = entry
         self.isSelected = isSelected
         self.onToggle = onToggle
@@ -38,16 +38,6 @@ struct CatalogEntryRow: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                
-                // Checkbox
-                Button(action: {
-                    onToggle(entry)
-                }) {
-                    Image(systemName: isSelected(entry) ? "checkmark.square.fill" : "square")
-                        .foregroundColor(isSelected(entry) ? .blue : .secondary)
-                }
-                .buttonStyle(.plain)
-                .frame(width: 30)
                 
                 // Expand/Collapse for folders
                 if entry.isDirectory && entry.children != nil && !entry.children!.isEmpty {
@@ -100,8 +90,10 @@ struct CatalogEntryRow: View {
             .padding(.horizontal, 8)
             .background(isSelected(entry) ? Color.blue.opacity(0.1) : Color.clear)
             .contentShape(Rectangle())
-            .onTapGesture {
-                onToggle(entry)
+            .onTapGesture(count: 1) {
+                let commandPressed = NSEvent.modifierFlags.contains(.command)
+                let shiftPressed = NSEvent.modifierFlags.contains(.shift)
+                onToggle(entry, commandPressed, shiftPressed)
             }
             
             // Show children when expanded
@@ -117,8 +109,8 @@ struct CatalogEntryRow: View {
                 }
             }
         }
-        .onChange(of: expandAllTrigger) { newValue in
-            isExpanded = newValue
+        .onChange(of: expandAllTrigger) {
+            isExpanded = expandAllTrigger
         }
     }
 }
@@ -127,7 +119,7 @@ struct CatalogEntryRow: View {
 struct CatalogEntryRowRecursive: View {
     let entry: DiskCatalogEntry
     let isSelected: (DiskCatalogEntry) -> Bool
-    let onToggle: (DiskCatalogEntry) -> Void
+    let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void
     let level: Int
     let expandAllTrigger: Bool
     

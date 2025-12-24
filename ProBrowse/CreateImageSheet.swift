@@ -247,10 +247,10 @@ struct CreateImageSheet: View {
         print("   Size: \(diskSize.sizeString)")
         print("   Format: \(imageFormat.fileExtension)")
         
-        CadiusManager.shared.createVolume(
+        ProDOSWriter.shared.createDiskImage(
+            at: outputPath,
             volumeName: volumeName,
-            imagePath: outputPath,
-            size: diskSize.sizeString
+            sizeString: diskSize.sizeString
         ) { success, message in
             isCreating = false
             

@@ -52,12 +52,6 @@ struct DiskBrowserPane: View {
                     VStack(spacing: 0) {
                         // Control Bar
                         HStack {
-                            Button(action: { viewModel.toggleSelectAll() }) {
-                                Label(viewModel.isAllSelected ? "Deselect All" : "Select All",
-                                      systemImage: viewModel.isAllSelected ? "checkmark.square" : "square")
-                            }
-                            .buttonStyle(.plain)
-                            
                             Button(action: { viewModel.expandAll() }) {
                                 Label("Expand All", systemImage: "arrow.down.right.and.arrow.up.left")
                             }
@@ -85,26 +79,45 @@ struct DiskBrowserPane: View {
                             CatalogEntryRow(
                                 entry: entry,
                                 isSelected: { viewModel.isSelected($0) },
-                                onToggle: { viewModel.toggleSelection($0) },
+                                onToggle: { entry, cmd, shift in
+                                    viewModel.toggleSelection(entry, commandPressed: cmd, shiftPressed: shift)
+                                },
                                 level: 0,
                                 expandAllTrigger: viewModel.expandAllTrigger
                             )
                             .onDrag {
-                                // Drag from this pane
+                                // Drag from this pane - use simple string transfer
                                 let selectedEntries = viewModel.getSelectedEntries()
                                 print("🎯 Starting drag with \(selectedEntries.count) entries")
                                 for entry in selectedEntries {
                                     print("   - \(entry.name)")
                                 }
                                 draggedEntries = selectedEntries
-                                return NSItemProvider(object: DraggedEntriesWrapper(entries: selectedEntries))
+                                
+                                // Encode to JSON string
+                                do {
+                                    let jsonData = try JSONEncoder().encode(selectedEntries)
+                                    if let jsonString = String(data: jsonData, encoding: .utf8) {
+                                        print("📦 Encoded JSON (\(jsonString.count) chars)")
+                                        print("   First 100 chars: \(String(jsonString.prefix(100)))")
+                                        let provider = NSItemProvider(object: jsonString as NSString)
+                                        provider.suggestedName = "probrowse-entries"
+                                        return provider
+                                    } else {
+                                        print("❌ Failed to create string from JSON data")
+                                    }
+                                } catch {
+                                    print("❌ JSON Encoding error: \(error)")
+                                }
+                                
+                                return NSItemProvider()
                             }
                         }
                     }
                 }
                 .background(
                     Color.clear
-                        .onDrop(of: [.fileURL, .data], isTargeted: $isTargeted) { providers in
+                        .onDrop(of: [.fileURL, .plainText], isTargeted: $isTargeted) { providers in
                             handleDrop(providers: providers)
                         }
                 )
@@ -197,10 +210,51 @@ struct DiskBrowserPane: View {
             }
         }
         
-        // Handle drop from other pane
+        // Handle drop from other pane (String-based transfer via Data)
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                print("🔄 Handling inter-pane drop (plaintext)")
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.plainText.identifier) { (data, error) in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            print("❌ Error loading data: \(error)")
+                            return
+                        }
+                        
+                        guard let data = data else {
+                            print("❌ No data received")
+                            return
+                        }
+                        
+                        print("✅ Got data (\(data.count) bytes)")
+                        
+                        if let jsonString = String(data: data, encoding: .utf8) {
+                            print("✅ Converted to string (\(jsonString.count) chars)")
+                            print("   First 100 chars: \(String(jsonString.prefix(100)))")
+                            
+                            do {
+                                let entries = try JSONDecoder().decode([DiskCatalogEntry].self, from: data)
+                                print("✅ Decoded \(entries.count) entries")
+                                for entry in entries {
+                                    print("   - \(entry.name)")
+                                }
+                                viewModel.importEntries(entries, from: targetViewModel)
+                            } catch {
+                                print("❌ JSON Decoding error: \(error)")
+                            }
+                        } else {
+                            print("❌ Failed to convert data to string")
+                        }
+                    }
+                }
+                return true
+            }
+        }
+        
+        // Old method - keep for backward compatibility
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier("com.probrowse.entries") {
-                print("🔄 Handling inter-pane drop")
+                print("🔄 Handling inter-pane drop (legacy)")
                 provider.loadDataRepresentation(forTypeIdentifier: "com.probrowse.entries") { data, error in
                     DispatchQueue.main.async {
                         if let error = error {

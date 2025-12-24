@@ -97,7 +97,8 @@ class DiskImageParser {
                 let nameLength = Int(data[entryOffset] & 0x0F)
                 var fileName = ""
                 for i in 0..<nameLength {
-                    fileName.append(Character(UnicodeScalar(data[entryOffset + 1 + i])))
+                    let char = data[entryOffset + 1 + i] & 0x7F  // Remove high bit
+                    fileName.append(Character(UnicodeScalar(char)))
                 }
                 
                 let fileType = data[entryOffset + 16]
@@ -114,6 +115,7 @@ class DiskImageParser {
                         name: fileName,
                         fileType: 0x0F,
                         fileTypeString: "DIR",
+                        auxType: 0,
                         size: blocksUsed * blockSize,
                         blocks: blocksUsed,
                         loadAddress: nil,
@@ -133,6 +135,7 @@ class DiskImageParser {
                             name: fileName,
                             fileType: fileType,
                             fileTypeString: String(format: "$%02X", fileType),
+                            auxType: UInt16(auxType),
                             size: eof,
                             blocks: blocksUsed,
                             loadAddress: auxType,
@@ -170,7 +173,9 @@ class DiskImageParser {
             guard indexOffset + blockSize <= data.count else { return nil }
             
             for i in 0..<256 {
-                let blockNum = Int(data[indexOffset + i]) | (Int(data[indexOffset + i + 256]) << 8)
+                let blockNumLo = Int(data[indexOffset + i])
+                let blockNumHi = Int(data[indexOffset + 256 + i])
+                let blockNum = blockNumLo | (blockNumHi << 8)
                 if blockNum == 0 { continue }
                 
                 let offset = blockNum * blockSize
@@ -190,14 +195,18 @@ class DiskImageParser {
             guard masterIndexOffset + blockSize <= data.count else { return nil }
             
             for i in 0..<256 {
-                let indexBlockNum = Int(data[masterIndexOffset + i]) | (Int(data[masterIndexOffset + i + 256]) << 8)
+                let indexBlockNumLo = Int(data[masterIndexOffset + i])
+                let indexBlockNumHi = Int(data[masterIndexOffset + 256 + i])
+                let indexBlockNum = indexBlockNumLo | (indexBlockNumHi << 8)
                 if indexBlockNum == 0 { continue }
                 
                 let indexOffset = indexBlockNum * blockSize
                 guard indexOffset + blockSize <= data.count else { continue }
                 
                 for j in 0..<256 {
-                    let dataBlockNum = Int(data[indexOffset + j]) | (Int(data[indexOffset + j + 256]) << 8)
+                    let dataBlockNumLo = Int(data[indexOffset + j])
+                    let dataBlockNumHi = Int(data[indexOffset + 256 + j])
+                    let dataBlockNum = dataBlockNumLo | (dataBlockNumHi << 8)
                     if dataBlockNum == 0 { continue }
                     
                     let offset = dataBlockNum * blockSize
@@ -261,6 +270,7 @@ class DiskImageParser {
                         name: fileName + (locked ? " 🔒" : ""),
                         fileType: fileType,
                         fileTypeString: String(format: "$%02X", fileType),
+                        auxType: 0,
                         size: fileData.count,
                         blocks: nil,
                         loadAddress: nil,
