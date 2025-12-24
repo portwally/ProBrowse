@@ -13,38 +13,41 @@ struct DiskBrowserPane: View {
     @ObservedObject var viewModel: DiskPaneViewModel
     @ObservedObject var targetViewModel: DiskPaneViewModel
     let paneTitle: String
+    var hideHeader: Bool = false
     
     @State private var draggedEntries: [DiskCatalogEntry] = []
     @State private var isTargeted = false
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text(paneTitle)
-                    .font(.headline)
-                
-                Spacer()
-                
-                if let diskName = viewModel.catalog?.diskName {
-                    Text(diskName)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+            // Header (optional)
+            if !hideHeader {
+                HStack {
+                    Text(paneTitle)
+                        .font(.headline)
+                    
+                    Spacer()
+                    
+                    if let diskName = viewModel.catalog?.diskName {
+                        Text(diskName)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    if let imagePath = viewModel.diskImagePath {
+                        Text(imagePath.lastPathComponent)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(NSColor.controlBackgroundColor))
                 
-                if let imagePath = viewModel.diskImagePath {
-                    Text(imagePath.lastPathComponent)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                Divider()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor))
-            
-            Divider()
             
             // Browser Content
             if let catalog = viewModel.catalog {
@@ -58,16 +61,6 @@ struct DiskBrowserPane: View {
                             .buttonStyle(.plain)
                             
                             Spacer()
-                            
-                            if !viewModel.selectedEntries.isEmpty {
-                                Text("\(viewModel.selectedEntries.count) selected")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                
-                                Button("Export to Finder") {
-                                    viewModel.exportSelectedToFinder()
-                                }
-                            }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)

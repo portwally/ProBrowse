@@ -324,4 +324,51 @@ class DiskPaneViewModel: ObservableObject {
             }
         }
     }
+    
+    // MARK: - Delete Files
+    
+    func deleteSelected() {
+        guard let diskImagePath = diskImagePath else {
+            print("❌ No disk image loaded")
+            return
+        }
+        
+        let entriesToDelete = getSelectedEntries()
+        guard !entriesToDelete.isEmpty else { return }
+        
+        print("🗑️ Deleting \(entriesToDelete.count) files...")
+        
+        // Delete files sequentially
+        deleteNextFile(entries: entriesToDelete, index: 0, from: diskImagePath)
+    }
+    
+    private func deleteNextFile(entries: [DiskCatalogEntry], index: Int, from diskImagePath: URL) {
+        guard index < entries.count else {
+            // All files deleted - reload and clear selection
+            print("✅ All files deleted, reloading...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.selectedEntries.removeAll()
+                self.loadDiskImage(from: diskImagePath)
+            }
+            return
+        }
+        
+        let entry = entries[index]
+        guard !entry.isDirectory else {
+            // Skip directories
+            deleteNextFile(entries: entries, index: index + 1, from: diskImagePath)
+            return
+        }
+        
+        ProDOSWriter.shared.deleteFile(diskImagePath: diskImagePath, fileName: entry.name) { success, message in
+            if success {
+                print("✅ Deleted \(entry.name)")
+            } else {
+                print("❌ Failed to delete \(entry.name): \(message)")
+            }
+            
+            // Continue with next file
+            self.deleteNextFile(entries: entries, index: index + 1, from: diskImagePath)
+        }
+    }
 }

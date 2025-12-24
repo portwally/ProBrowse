@@ -645,6 +645,156 @@ class ProDOSWriter {
         print("   📂 Created volume directory")
     }
     
+    // MARK: - Delete File
+    
+    func deleteFile(diskImagePath: URL, fileName: String, completion: @escaping (Bool, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read disk image")
+                    }
+                    return
+                }
+                
+                print("🗑️ Deleting file from ProDOS image:")
+                print("   File: \(fileName)")
+                
+                // Find the file entry
+                guard let (dirBlock, entryOffset) = self.findFileEntry(Data(referencing: diskData), fileName: fileName) else {
+                    DispatchQueue.main.async {
+                        completion(false, "File not found")
+                    }
+                    return
+                }
+                
+                let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+                
+                // Get file info before deleting
+                let storageType = bytes[entryOffset] >> 4
+                let keyBlockLo = bytes[entryOffset + 0x11]
+                let keyBlockHi = bytes[entryOffset + 0x12]
+                let keyBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
+                let blocksUsedLo = bytes[entryOffset + 0x13]
+                let blocksUsedHi = bytes[entryOffset + 0x14]
+                let blocksUsed = Int(blocksUsedLo) | (Int(blocksUsedHi) << 8)
+                
+                print("   📝 Storage type: \(storageType)")
+                print("   📦 Blocks used: \(blocksUsed)")
+                print("   🔑 Key block: \(keyBlock)")
+                
+                // Free all blocks used by the file
+                var blocksToFree: [Int] = []
+                
+                if storageType == 1 {
+                    // Seedling - just the data block
+                    blocksToFree.append(keyBlock)
+                } else if storageType == 2 {
+                    // Sapling - index block + data blocks
+                    let indexOffset = keyBlock * self.BLOCK_SIZE
+                    
+                    // Free data blocks
+                    for i in 0..<256 {
+                        let ptrLo = bytes[indexOffset + i]
+                        let ptrHi = bytes[indexOffset + 256 + i]
+                        let dataBlock = Int(ptrLo) | (Int(ptrHi) << 8)
+                        if dataBlock != 0 {
+                            blocksToFree.append(dataBlock)
+                        }
+                    }
+                    
+                    // Free index block
+                    blocksToFree.append(keyBlock)
+                } else if storageType == 3 {
+                    // Tree - master index + index blocks + data blocks
+                    let masterOffset = keyBlock * self.BLOCK_SIZE
+                    
+                    for i in 0..<256 {
+                        let indexPtrLo = bytes[masterOffset + i]
+                        let indexPtrHi = bytes[masterOffset + 256 + i]
+                        let indexBlock = Int(indexPtrLo) | (Int(indexPtrHi) << 8)
+                        if indexBlock == 0 { continue }
+                        
+                        let indexOffset = indexBlock * self.BLOCK_SIZE
+                        
+                        // Free data blocks
+                        for j in 0..<256 {
+                            let dataPtrLo = bytes[indexOffset + j]
+                            let dataPtrHi = bytes[indexOffset + 256 + j]
+                            let dataBlock = Int(dataPtrLo) | (Int(dataPtrHi) << 8)
+                            if dataBlock != 0 {
+                                blocksToFree.append(dataBlock)
+                            }
+                        }
+                        
+                        // Free index block
+                        blocksToFree.append(indexBlock)
+                    }
+                    
+                    // Free master index block
+                    blocksToFree.append(keyBlock)
+                }
+                
+                print("   🔓 Freeing \(blocksToFree.count) blocks")
+                
+                // Mark blocks as free in bitmap
+                self.freeBlocks(diskData, blocks: blocksToFree)
+                
+                // Clear directory entry (mark as deleted)
+                memset(bytes + entryOffset, 0, self.ENTRY_LENGTH)
+                
+                // Decrement file count
+                self.decrementFileCount(diskData)
+                
+                // Write back to disk
+                try diskData.write(to: diskImagePath, options: .atomic)
+                
+                DispatchQueue.main.async {
+                    completion(true, "File deleted successfully")
+                }
+                
+                print("   ✅ File deleted successfully")
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "Error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    // MARK: - Free Blocks
+    
+    private func freeBlocks(_ diskData: NSMutableData, blocks: [Int]) {
+        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        let bitmapStartBlock = 6
+        let bitmapOffset = bitmapStartBlock * BLOCK_SIZE
+        
+        for block in blocks {
+            let byteIndex = block / 8
+            let bitPosition = 7 - (block % 8)
+            bytes[bitmapOffset + byteIndex] |= (1 << bitPosition)  // Set bit to 1 = free
+        }
+    }
+    
+    // MARK: - Decrement File Count
+    
+    private func decrementFileCount(_ diskData: NSMutableData) {
+        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        let volHeaderOffset = VOLUME_DIR_BLOCK * BLOCK_SIZE + 4
+        let fileCountOffset = volHeaderOffset + 0x25
+        
+        let currentCountLo = Int(bytes[fileCountOffset])
+        let currentCountHi = Int(bytes[fileCountOffset + 1])
+        var fileCount = currentCountLo | (currentCountHi << 8)
+        
+        fileCount = max(0, fileCount - 1)
+        
+        bytes[fileCountOffset] = UInt8(fileCount & 0xFF)
+        bytes[fileCountOffset + 1] = UInt8((fileCount >> 8) & 0xFF)
+        
+        print("   📊 Updated file count: \(fileCount)")
+    }
+    
     // MARK: - Create Bitmap
     
     private func createBitmap(_ diskData: NSMutableData, totalBlocks: Int) {

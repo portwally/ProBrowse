@@ -27,14 +27,12 @@ struct ContentView: View {
                 onOpenLeft: { leftPaneVM.showingFilePicker = true },
                 onOpenRight: { rightPaneVM.showingFilePicker = true },
                 onCreate: { showingCreateImageSheet = true },
-                onInspectLeft: {
-                    inspectorPane = .left
-                    showingInspectorSheet = true
-                },
-                onInspectRight: {
-                    inspectorPane = .right
-                    showingInspectorSheet = true
-                }
+                onDeleteLeft: { leftPaneVM.deleteSelected() },
+                onDeleteRight: { rightPaneVM.deleteSelected() },
+                onExportLeft: { leftPaneVM.exportSelectedToFinder() },
+                onExportRight: { rightPaneVM.exportSelectedToFinder() },
+                leftSelectionCount: leftPaneVM.selectedEntries.count,
+                rightSelectionCount: rightPaneVM.selectedEntries.count
             )
             
             Divider()
@@ -73,22 +71,40 @@ struct ToolbarView: View {
     let onOpenLeft: () -> Void
     let onOpenRight: () -> Void
     let onCreate: () -> Void
-    let onInspectLeft: () -> Void
-    let onInspectRight: () -> Void
+    let onDeleteLeft: () -> Void
+    let onDeleteRight: () -> Void
+    let onExportLeft: () -> Void
+    let onExportRight: () -> Void
+    let leftSelectionCount: Int
+    let rightSelectionCount: Int
     
     var body: some View {
         HStack(spacing: 16) {
             // Left Pane Controls
-            Group {
+            HStack(spacing: 12) {
                 Button(action: onOpenLeft) {
                     Label("Open Left", systemImage: "folder.badge.plus")
                 }
                 .help("Open disk image in left pane (⌘O)")
                 
-                Button(action: onInspectLeft) {
-                    Label("Inspect Left", systemImage: "info.circle")
+                Button(action: onDeleteLeft) {
+                    Label("Delete", systemImage: "trash")
                 }
-                .help("Inspect left disk image")
+                .disabled(leftSelectionCount == 0)
+                .foregroundColor(leftSelectionCount > 0 ? .red : .secondary)
+                .help("Delete selected files (⌫)")
+                
+                Button(action: onExportLeft) {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .disabled(leftSelectionCount == 0)
+                .help("Export selected files to Finder")
+                
+                if leftSelectionCount > 0 {
+                    Text("\(leftSelectionCount)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             
             Divider()
@@ -100,23 +116,40 @@ struct ToolbarView: View {
             }
             .help("Create new disk image (⌘N)")
             
+            Spacer()
+            
+            // Vertical separator matching browser divider
             Divider()
-                .frame(height: 24)
+                .frame(width: 1)
+            
+            Spacer()
             
             // Right Pane Controls
-            Group {
+            HStack(spacing: 12) {
+                if rightSelectionCount > 0 {
+                    Text("\(rightSelectionCount)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Button(action: onExportRight) {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .disabled(rightSelectionCount == 0)
+                .help("Export selected files to Finder")
+                
+                Button(action: onDeleteRight) {
+                    Label("Delete", systemImage: "trash")
+                }
+                .disabled(rightSelectionCount == 0)
+                .foregroundColor(rightSelectionCount > 0 ? .red : .secondary)
+                .help("Delete selected files (⌫)")
+                
                 Button(action: onOpenRight) {
                     Label("Open Right", systemImage: "folder.badge.plus")
                 }
                 .help("Open disk image in right pane (⌘⇧O)")
-                
-                Button(action: onInspectRight) {
-                    Label("Inspect Right", systemImage: "info.circle")
-                }
-                .help("Inspect right disk image")
             }
-            
-            Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
