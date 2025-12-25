@@ -77,7 +77,7 @@ struct CreateImageSheet: View {
         
         var sizeString: String {
             switch self {
-            case .size140kb: return "143KB"     // Minimum valid ProDOS size
+            case .size140kb: return "140KB"     // Standard 5.25" floppy (280 blocks)
             case .size800kb: return "800KB"     // Standard 3.5" disk
             case .size32mb: return "32MB"       // Maximum ProDOS size
             }
