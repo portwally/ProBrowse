@@ -176,15 +176,14 @@ class DiskImageParser {
                 let blockNumLo = Int(data[indexOffset + i])
                 let blockNumHi = Int(data[indexOffset + 256 + i])
                 let blockNum = blockNumLo | (blockNumHi << 8)
-                if blockNum == 0 { continue }
+                if blockNum == 0 { continue }  // Skip null entries (sparse file)
                 
                 let offset = blockNum * blockSize
                 guard offset + blockSize <= data.count else { continue }
                 fileData.append(data.subdata(in: offset..<(offset + blockSize)))
-                
-                if fileData.count >= eof { break }
             }
             
+            // Trim to exact file size
             if fileData.count > eof {
                 fileData = fileData.subdata(in: 0..<eof)
             }
@@ -194,31 +193,35 @@ class DiskImageParser {
             let masterIndexOffset = keyBlock * blockSize
             guard masterIndexOffset + blockSize <= data.count else { return nil }
             
+            var totalBlocks = 0
             for i in 0..<256 {
                 let indexBlockNumLo = Int(data[masterIndexOffset + i])
                 let indexBlockNumHi = Int(data[masterIndexOffset + 256 + i])
                 let indexBlockNum = indexBlockNumLo | (indexBlockNumHi << 8)
-                if indexBlockNum == 0 { continue }
+                if indexBlockNum == 0 { break }  // No more index blocks
                 
                 let indexOffset = indexBlockNum * blockSize
                 guard indexOffset + blockSize <= data.count else { continue }
                 
+                var blocksInThisIndex = 0
                 for j in 0..<256 {
                     let dataBlockNumLo = Int(data[indexOffset + j])
                     let dataBlockNumHi = Int(data[indexOffset + 256 + j])
                     let dataBlockNum = dataBlockNumLo | (dataBlockNumHi << 8)
-                    if dataBlockNum == 0 { continue }
+                    if dataBlockNum == 0 { continue }  // Skip null entries (sparse file)
                     
                     let offset = dataBlockNum * blockSize
                     guard offset + blockSize <= data.count else { continue }
                     fileData.append(data.subdata(in: offset..<(offset + blockSize)))
-                    
-                    if fileData.count >= eof { break }
+                    blocksInThisIndex += 1
                 }
-                
-                if fileData.count >= eof { break }
+                totalBlocks += blocksInThisIndex
+                print("   [Parser] Index \(i) @ block#\(indexBlockNum): read \(blocksInThisIndex) blocks")
             }
             
+            print("   [Parser] Total blocks read: \(totalBlocks), file size: \(fileData.count) / \(eof)")
+            
+            // Trim to exact file size
             if fileData.count > eof {
                 fileData = fileData.subdata(in: 0..<eof)
             }

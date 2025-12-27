@@ -21,34 +21,44 @@ struct ContentView: View {
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Toolbar
-            ToolbarView(
-                onOpenLeft: { leftPaneVM.showingFilePicker = true },
-                onOpenRight: { rightPaneVM.showingFilePicker = true },
-                onCreate: { showingCreateImageSheet = true },
-                onDeleteLeft: { leftPaneVM.deleteSelected() },
-                onDeleteRight: { rightPaneVM.deleteSelected() },
-                onExportLeft: { leftPaneVM.exportSelectedToFinder() },
-                onExportRight: { rightPaneVM.exportSelectedToFinder() },
-                leftSelectionCount: leftPaneVM.selectedEntries.count,
-                rightSelectionCount: rightPaneVM.selectedEntries.count
-            )
-            
-            Divider()
-            
-            // Dual Pane Browser
-            HStack(spacing: 0) {
-                // Left Pane
-                DiskBrowserPane(viewModel: leftPaneVM, targetViewModel: rightPaneVM, paneTitle: "Left Disk")
-                    .frame(minWidth: 400)
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                // Toolbar
+                ToolbarView(
+                    onOpenLeft: { leftPaneVM.showingFilePicker = true },
+                    onOpenRight: { rightPaneVM.showingFilePicker = true },
+                    onCreate: { showingCreateImageSheet = true },
+                    onDeleteLeft: { leftPaneVM.deleteSelected() },
+                    onDeleteRight: { rightPaneVM.deleteSelected() },
+                    onExportLeft: { leftPaneVM.exportSelectedToFinder() },
+                    onExportRight: { rightPaneVM.exportSelectedToFinder() },
+                    leftSelectionCount: leftPaneVM.selectedEntries.count,
+                    rightSelectionCount: rightPaneVM.selectedEntries.count
+                )
                 
                 Divider()
                 
-                // Right Pane
-                DiskBrowserPane(viewModel: rightPaneVM, targetViewModel: leftPaneVM, paneTitle: "Right Disk")
-                    .frame(minWidth: 400)
+                // Dual Pane Browser
+                HStack(spacing: 0) {
+                    // Left Pane
+                    DiskBrowserPane(viewModel: leftPaneVM, targetViewModel: rightPaneVM, paneTitle: "Left Disk")
+                        .frame(minWidth: 400)
+                    
+                    Divider()
+                    
+                    // Right Pane
+                    DiskBrowserPane(viewModel: rightPaneVM, targetViewModel: leftPaneVM, paneTitle: "Right Disk")
+                        .frame(minWidth: 400)
+                }
             }
+            .overlay(
+                // Vertical divider in toolbar aligned with browser divider
+                Divider()
+                    .frame(width: 1)
+                    .offset(x: geometry.size.width / 2, y: 30) // Center, toolbar height/2
+                    .frame(height: 60)
+                , alignment: .topLeading
+            )
         }
         .sheet(isPresented: $showingCreateImageSheet) {
             CreateImageSheet()
@@ -79,81 +89,120 @@ struct ToolbarView: View {
     let rightSelectionCount: Int
     
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 0) {
             // Left Pane Controls
-            HStack(spacing: 12) {
-                Button(action: onOpenLeft) {
-                    Label("Open Left", systemImage: "folder.badge.plus")
-                }
+            HStack(spacing: 16) {
+                ToolbarButton(
+                    icon: "folder.badge.plus",
+                    label: "Open Left",
+                    action: onOpenLeft
+                )
                 .help("Open disk image in left pane (⌘O)")
                 
-                Button(action: onDeleteLeft) {
-                    Label("Delete", systemImage: "trash")
-                }
-                .disabled(leftSelectionCount == 0)
-                .foregroundColor(leftSelectionCount > 0 ? .red : .secondary)
+                ToolbarButton(
+                    icon: "trash",
+                    label: "Delete",
+                    action: onDeleteLeft,
+                    disabled: leftSelectionCount == 0,
+                    destructive: true
+                )
                 .help("Delete selected files (⌫)")
                 
-                Button(action: onExportLeft) {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                }
-                .disabled(leftSelectionCount == 0)
+                ToolbarButton(
+                    icon: "square.and.arrow.up",
+                    label: "Export",
+                    action: onExportLeft,
+                    disabled: leftSelectionCount == 0
+                )
                 .help("Export selected files to Finder")
                 
                 if leftSelectionCount > 0 {
                     Text("\(leftSelectionCount)")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .padding(.leading, 4)
                 }
             }
+            .padding(.leading, 16)
             
-            Divider()
-                .frame(height: 24)
+            Spacer()
             
-            // Global Controls
-            Button(action: onCreate) {
-                Label("Create Image", systemImage: "doc.badge.plus")
-            }
+            // Global Controls (centered)
+            ToolbarButton(
+                icon: "doc.badge.plus",
+                label: "Create Image",
+                action: onCreate
+            )
             .help("Create new disk image (⌘N)")
             
             Spacer()
             
-            // Vertical separator matching browser divider
-            Divider()
-                .frame(width: 1)
-            
-            Spacer()
-            
             // Right Pane Controls
-            HStack(spacing: 12) {
+            HStack(spacing: 16) {
                 if rightSelectionCount > 0 {
                     Text("\(rightSelectionCount)")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .padding(.trailing, 4)
                 }
                 
-                Button(action: onExportRight) {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                }
-                .disabled(rightSelectionCount == 0)
+                ToolbarButton(
+                    icon: "square.and.arrow.up",
+                    label: "Export",
+                    action: onExportRight,
+                    disabled: rightSelectionCount == 0
+                )
                 .help("Export selected files to Finder")
                 
-                Button(action: onDeleteRight) {
-                    Label("Delete", systemImage: "trash")
-                }
-                .disabled(rightSelectionCount == 0)
-                .foregroundColor(rightSelectionCount > 0 ? .red : .secondary)
+                ToolbarButton(
+                    icon: "trash",
+                    label: "Delete",
+                    action: onDeleteRight,
+                    disabled: rightSelectionCount == 0,
+                    destructive: true
+                )
                 .help("Delete selected files (⌫)")
                 
-                Button(action: onOpenRight) {
-                    Label("Open Right", systemImage: "folder.badge.plus")
-                }
+                ToolbarButton(
+                    icon: "folder.badge.plus",
+                    label: "Open Right",
+                    action: onOpenRight
+                )
                 .help("Open disk image in right pane (⌘⇧O)")
             }
+            .padding(.trailing, 16)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .frame(height: 60) // Compact height
         .background(Color(NSColor.controlBackgroundColor))
+    }
+}
+
+// MARK: - Toolbar Button Component
+
+struct ToolbarButton: View {
+    let icon: String
+    let label: String
+    let action: () -> Void
+    var disabled: Bool = false
+    var destructive: Bool = false
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 18))
+                    .frame(height: 20)
+                
+                Text(label)
+                    .font(.system(size: 9))
+            }
+            .frame(width: 60)
+        }
+        .buttonStyle(.borderless)
+        .disabled(disabled)
+        .foregroundColor(
+            disabled ? .secondary : (destructive ? .red : .primary)
+        )
     }
 }
 

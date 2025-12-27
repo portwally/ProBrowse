@@ -294,34 +294,26 @@ class DiskPaneViewModel: ObservableObject {
             return
         }
         
-        // Extract from source
-        ProDOSWriter.shared.extractFile(diskImagePath: sourceImagePath, fileName: entry.name) { extractSuccess, fileData in
-            guard extractSuccess, let data = fileData else {
-                print("❌ Failed to extract \(entry.name)")
-                // Continue with next file
-                self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
-                return
+        // Use data directly from catalog entry (already extracted by DiskImageParser)
+        let data = entry.data
+        print("✅ Using cached data for \(entry.name) (\(data.count) bytes)")
+        
+        // Add to target
+        ProDOSWriter.shared.addFile(
+            diskImagePath: targetImagePath,
+            fileName: entry.name,
+            fileData: data,
+            fileType: entry.fileType,
+            auxType: entry.auxType
+        ) { addSuccess, message in
+            if addSuccess {
+                print("✅ Copied \(entry.name)")
+            } else {
+                print("❌ Failed to add \(entry.name): \(message)")
             }
             
-            print("✅ Extracted \(entry.name) (\(data.count) bytes)")
-            
-            // Add to target
-            ProDOSWriter.shared.addFile(
-                diskImagePath: targetImagePath,
-                fileName: entry.name,
-                fileData: data,
-                fileType: entry.fileType,
-                auxType: entry.auxType
-            ) { addSuccess, message in
-                if addSuccess {
-                    print("✅ Copied \(entry.name)")
-                } else {
-                    print("❌ Failed to add \(entry.name): \(message)")
-                }
-                
-                // Continue with next file
-                self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
-            }
+            // Continue with next file
+            self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
         }
     }
     
