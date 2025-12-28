@@ -173,7 +173,7 @@ class DiskPaneViewModel: ObservableObject {
     // MARK: - Export to Finder
     
     func exportSelectedToFinder() {
-        let entriesToExport = getSelectedEntries().filter { !$0.isDirectory }
+        let entriesToExport = getSelectedEntries()  // Include directories!
         
         guard !entriesToExport.isEmpty else { return }
         
@@ -196,31 +196,66 @@ class DiskPaneViewModel: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
             
+            var exportedCount = 0
             for entry in entriesToExport {
-                var filename = entry.name
-                
-                // Add extension if missing
-                if !filename.contains(".") {
-                    switch entry.fileType {
-                    case 0x00, 0x01: filename += ".txt"
-                    case 0x02: filename += ".bas"
-                    case 0x04, 0x06: filename += ".bin"
-                    case 0xFA, 0xFC: filename += ".bas"
-                    default: filename += ".dat"
-                    }
-                }
-                
-                let fileURL = exportFolder.appendingPathComponent(filename)
-                try entry.data.write(to: fileURL)
-                print("✅ Exported: \(filename)")
+                exportedCount += exportEntry(entry, to: exportFolder)
             }
             
-            print("🎉 Export completed: \(entriesToExport.count) files")
+            print("🎉 Export completed: \(exportedCount) files")
             NSWorkspace.shared.activateFileViewerSelecting([exportFolder])
             
         } catch {
             print("❌ Export error: \(error)")
         }
+    }
+    
+    // MARK: - Recursive Export Helper
+    
+    private func exportEntry(_ entry: DiskCatalogEntry, to parentFolder: URL) -> Int {
+        var count = 0
+        
+        if entry.isDirectory {
+            // Create subdirectory
+            let subfolderURL = parentFolder.appendingPathComponent(entry.name)
+            do {
+                try FileManager.default.createDirectory(at: subfolderURL, withIntermediateDirectories: true)
+                print("📁 Created directory: \(entry.name)")
+                
+                // Recursively export children
+                if let children = entry.children {
+                    for child in children {
+                        count += exportEntry(child, to: subfolderURL)
+                    }
+                }
+            } catch {
+                print("❌ Failed to create directory \(entry.name): \(error)")
+            }
+        } else {
+            // Export file
+            var filename = entry.name
+            
+            // Add extension if missing
+            if !filename.contains(".") {
+                switch entry.fileType {
+                case 0x00, 0x01: filename += ".txt"
+                case 0x02: filename += ".bas"
+                case 0x04, 0x06: filename += ".bin"
+                case 0xFA, 0xFC: filename += ".bas"
+                default: filename += ".dat"
+                }
+            }
+            
+            let fileURL = parentFolder.appendingPathComponent(filename)
+            do {
+                try entry.data.write(to: fileURL)
+                print("✅ Exported: \(filename)")
+                count = 1
+            } catch {
+                print("❌ Failed to export \(filename): \(error)")
+            }
+        }
+        
+        return count
     }
     
     // MARK: - Import Files
@@ -288,9 +323,21 @@ class DiskPaneViewModel: ObservableObject {
         }
         
         let entry = entries[index]
-        guard !entry.isDirectory else {
-            // Skip directories, move to next
-            copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+        
+        if entry.isDirectory {
+            // Handle directory by copying all its children (flattened)
+            print("📁 Processing directory: \(entry.name)")
+            
+            if let children = entry.children, !children.isEmpty {
+                // Recursively copy all files from this directory
+                copyDirectoryContents(children, from: sourceImagePath, to: targetImagePath) {
+                    // After all children copied, move to next entry
+                    self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                }
+            } else {
+                // Empty directory, skip to next
+                copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+            }
             return
         }
         
@@ -314,6 +361,68 @@ class DiskPaneViewModel: ObservableObject {
             
             // Continue with next file
             self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+        }
+    }
+    
+    // MARK: - Copy Directory Contents (Recursive Helper)
+    
+    private func copyDirectoryContents(_ entries: [DiskCatalogEntry], from sourceImagePath: URL, to targetImagePath: URL, completion: @escaping () -> Void) {
+        // Flatten all files from directory tree
+        var flattenedFiles: [DiskCatalogEntry] = []
+        
+        func collectFiles(_ entries: [DiskCatalogEntry]) {
+            for entry in entries {
+                if entry.isDirectory {
+                    // Recursively collect from subdirectories
+                    if let children = entry.children {
+                        collectFiles(children)
+                    }
+                } else {
+                    // Add file to flat list
+                    flattenedFiles.append(entry)
+                }
+            }
+        }
+        
+        collectFiles(entries)
+        
+        print("📋 Flattened \(flattenedFiles.count) files from directory tree")
+        
+        // Copy all flattened files
+        if !flattenedFiles.isEmpty {
+            copyNextFileFromList(files: flattenedFiles, index: 0, from: sourceImagePath, to: targetImagePath, completion: completion)
+        } else {
+            completion()
+        }
+    }
+    
+    private func copyNextFileFromList(files: [DiskCatalogEntry], index: Int, from sourceImagePath: URL, to targetImagePath: URL, completion: @escaping () -> Void) {
+        guard index < files.count else {
+            // All files from directory copied
+            completion()
+            return
+        }
+        
+        let entry = files[index]
+        let data = entry.data
+        
+        print("   Copying \(entry.name) from directory...")
+        
+        ProDOSWriter.shared.addFile(
+            diskImagePath: targetImagePath,
+            fileName: entry.name,
+            fileData: data,
+            fileType: entry.fileType,
+            auxType: entry.auxType
+        ) { addSuccess, message in
+            if addSuccess {
+                print("   ✅ Copied \(entry.name)")
+            } else {
+                print("   ❌ Failed: \(message)")
+            }
+            
+            // Continue with next file
+            self.copyNextFileFromList(files: files, index: index + 1, from: sourceImagePath, to: targetImagePath, completion: completion)
         }
     }
     
