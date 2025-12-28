@@ -192,30 +192,30 @@ class DiskImageParser {
                     ))
                 } else {
                     // Handle file
-                    if let fileData = extractProDOSFile(data: data, keyBlock: keyPointer, blocksUsed: blocksUsed, eof: eof, storageType: Int(entryStorageType), blockSize: blockSize) {
-                        
-                        let isGraphicsFile = [0x08, 0xC0, 0xC1].contains(fileType)
-                        
-                        // Get file type info for proper shortName
-                        let fileTypeInfo = ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: UInt16(auxType))
-                        
-                        entries.append(DiskCatalogEntry(
-                            name: fileName,
-                            fileType: fileType,
-                            fileTypeString: fileTypeInfo.shortName,
-                            auxType: UInt16(auxType),
-                            size: eof,
-                            blocks: blocksUsed,
-                            loadAddress: auxType,
-                            length: eof,
-                            data: fileData,
-                            isImage: isGraphicsFile,
-                            isDirectory: false,
-                            children: nil,
-                            modificationDate: modificationDate,
-                            creationDate: creationDate
-                        ))
-                    }
+                    // Try to extract file data (may return nil for some storage types)
+                    let fileData = extractProDOSFile(data: data, keyBlock: keyPointer, blocksUsed: blocksUsed, eof: eof, storageType: Int(entryStorageType), blockSize: blockSize) ?? Data()
+                    
+                    let isGraphicsFile = [0x08, 0xC0, 0xC1].contains(fileType)
+                    
+                    // Get file type info for proper shortName
+                    let fileTypeInfo = ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: UInt16(auxType))
+                    
+                    entries.append(DiskCatalogEntry(
+                        name: fileName,
+                        fileType: fileType,
+                        fileTypeString: fileTypeInfo.shortName,
+                        auxType: UInt16(auxType),
+                        size: eof,
+                        blocks: blocksUsed,
+                        loadAddress: auxType,
+                        length: eof,
+                        data: fileData,
+                        isImage: isGraphicsFile,
+                        isDirectory: false,
+                        children: nil,
+                        modificationDate: modificationDate,
+                        creationDate: creationDate
+                    ))
                 }
             }
             
@@ -294,6 +294,29 @@ class DiskImageParser {
             // Trim to exact file size
             if fileData.count > eof {
                 fileData = fileData.subdata(in: 0..<eof)
+            }
+        }
+        else if storageType == 5 {
+            // Extended file (forked file - data fork + resource fork)
+            // For now, just extract the data fork
+            let extKeyBlockOffset = keyBlock * blockSize
+            guard extKeyBlockOffset + blockSize <= data.count else { return nil }
+            
+            // Extended key block structure:
+            // +$00-01: Data fork storage type + key block
+            // +$02-04: Data fork length (3 bytes)
+            // +$100-101: Resource fork storage type + key block
+            // +$102-104: Resource fork length (3 bytes)
+            
+            let dataForkStorageType = Int(data[extKeyBlockOffset] & 0x0F)
+            let dataForkKeyBlock = Int(data[extKeyBlockOffset + 1]) | (Int(data[extKeyBlockOffset + 2]) << 8)
+            let dataForkEOF = Int(data[extKeyBlockOffset + 3]) | (Int(data[extKeyBlockOffset + 4]) << 8) | (Int(data[extKeyBlockOffset + 5]) << 16)
+            
+            print("   [Parser] Extended file: data fork storage=\(dataForkStorageType), key=\(dataForkKeyBlock), eof=\(dataForkEOF)")
+            
+            // Recursively extract data fork
+            if let dataForkData = extractProDOSFile(data: data, keyBlock: dataForkKeyBlock, blocksUsed: blocksUsed, eof: dataForkEOF, storageType: dataForkStorageType, blockSize: blockSize) {
+                fileData = dataForkData
             }
         }
         
