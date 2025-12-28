@@ -450,6 +450,232 @@ class ProDOSWriter {
         memcpy(bytes + entryOffset, entry, ENTRY_LENGTH)
     }
     
+    // MARK: - Create Directory
+    
+    /// Creates a new subdirectory in the disk image
+    func createDirectory(diskImagePath: URL, directoryName: String, parentPath: String = "/", completion: @escaping (Bool, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // Sanitize directory name
+                let sanitizedName = self.sanitizeProDOSFilename(directoryName)
+                
+                // Load disk image
+                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read disk image")
+                    }
+                    return
+                }
+                
+                let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+                
+                // Find parent directory (currently only support root "/")
+                let parentDirBlock = self.VOLUME_DIR_BLOCK
+                
+                // Find free directory entry in parent
+                guard let (entryDirBlock, entryOffset) = self.findFreeDirectoryEntry(diskData) else {
+                    DispatchQueue.main.async {
+                        completion(false, "No free directory entries")
+                    }
+                    return
+                }
+                
+                // Allocate a block for the new subdirectory
+                guard let blocks = self.allocateBlocks(diskData, count: 1),
+                      let dirBlock = blocks.first else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not allocate block for directory")
+                    }
+                    return
+                }
+                
+                print("📁 Creating directory '\(sanitizedName)' at block \(dirBlock)")
+                
+                // Create subdirectory header block
+                self.createSubdirectoryHeader(diskData, dirBlock: dirBlock, dirName: sanitizedName, parentBlock: parentDirBlock, parentEntryNum: 0, dataOffset: dataOffset)
+                
+                // Create directory entry in parent
+                self.createDirectoryEntryForSubdir(diskData, dirBlock: entryDirBlock, entryOffset: entryOffset, dirName: sanitizedName, keyBlock: dirBlock, dataOffset: dataOffset)
+                
+                // Increment file count in parent
+                self.incrementFileCount(diskData)
+                
+                // Write back to disk
+                guard diskData.write(to: diskImagePath, atomically: true) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Failed to write disk image")
+                    }
+                    return
+                }
+                
+                print("✅ Directory '\(sanitizedName)' created successfully")
+                
+                DispatchQueue.main.async {
+                    completion(true, "Directory created")
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "Error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    // MARK: - Create Subdirectory Header
+    
+    private func createSubdirectoryHeader(_ diskData: NSMutableData, dirBlock: Int, dirName: String, parentBlock: Int, parentEntryNum: Int, dataOffset: Int) {
+        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        let blockOffset = dataOffset + (dirBlock * BLOCK_SIZE)
+        
+        // Clear the block
+        memset(bytes + blockOffset, 0, BLOCK_SIZE)
+        
+        // +$00-01: Previous block (0x0000 for first block)
+        bytes[blockOffset + 0] = 0x00
+        bytes[blockOffset + 1] = 0x00
+        
+        // +$02-03: Next block (0x0000 - no next block initially)
+        bytes[blockOffset + 2] = 0x00
+        bytes[blockOffset + 3] = 0x00
+        
+        // +$04: Storage type (0xE = subdirectory header) + name length
+        let nameLength = min(dirName.count, 15)
+        bytes[blockOffset + 4] = UInt8(0xE0 | nameLength)
+        
+        // +$05-$13: Directory name (15 bytes)
+        for i in 0..<nameLength {
+            let index = dirName.index(dirName.startIndex, offsetBy: i)
+            bytes[blockOffset + 5 + i] = UInt8(dirName[index].asciiValue ?? 0x20)
+        }
+        
+        // +$14-$1B: Reserved (8 bytes) - zeros
+        
+        // +$1C-$1F: Creation date/time
+        let now = Date()
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: now)
+        
+        if let year = components.year, let month = components.month, let day = components.day {
+            let proDOSYear = year - 1900
+            let dateWord = UInt16((proDOSYear << 9) | (month << 5) | day)
+            bytes[blockOffset + 0x1C] = UInt8(dateWord & 0xFF)
+            bytes[blockOffset + 0x1D] = UInt8((dateWord >> 8) & 0xFF)
+        }
+        
+        if let hour = components.hour, let minute = components.minute {
+            let timeWord = UInt16((minute << 8) | hour)
+            bytes[blockOffset + 0x1E] = UInt8(timeWord & 0xFF)
+            bytes[blockOffset + 0x1F] = UInt8((timeWord >> 8) & 0xFF)
+        }
+        
+        // +$20: Version (0x00)
+        bytes[blockOffset + 0x20] = 0x00
+        
+        // +$21: Access (0xE3 = full access)
+        bytes[blockOffset + 0x21] = 0xE3
+        
+        // +$22: Entry length (0x27 = 39 bytes)
+        bytes[blockOffset + 0x22] = 0x27
+        
+        // +$23: Entries per block (0x0D = 13)
+        bytes[blockOffset + 0x23] = 0x0D
+        
+        // +$24-$25: File count (0x0000 initially - empty directory)
+        bytes[blockOffset + 0x24] = 0x00
+        bytes[blockOffset + 0x25] = 0x00
+        
+        // +$26-$27: Parent pointer (block number of parent directory)
+        bytes[blockOffset + 0x26] = UInt8(parentBlock & 0xFF)
+        bytes[blockOffset + 0x27] = UInt8((parentBlock >> 8) & 0xFF)
+        
+        // +$28: Parent entry number (which entry in parent points to this subdir)
+        bytes[blockOffset + 0x28] = UInt8(parentEntryNum)
+        
+        // +$29: Parent entry length (0x27)
+        bytes[blockOffset + 0x29] = 0x27
+        
+        print("   📝 Created subdirectory header at block \(dirBlock)")
+    }
+    
+    // MARK: - Create Directory Entry for Subdirectory
+    
+    private func createDirectoryEntryForSubdir(_ diskData: NSMutableData, dirBlock: Int, entryOffset: Int, dirName: String, keyBlock: Int, dataOffset: Int) {
+        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        var entry = [UInt8](repeating: 0, count: ENTRY_LENGTH)
+        
+        // Storage type (0xD = subdirectory) + name length
+        let nameLength = min(dirName.count, 15)
+        entry[0] = UInt8(0xD0 | nameLength)
+        
+        // File name (bytes 1-15)
+        for i in 0..<nameLength {
+            let index = dirName.index(dirName.startIndex, offsetBy: i)
+            entry[1 + i] = UInt8(dirName[index].asciiValue ?? 0x20)
+        }
+        
+        // File type: 0x0F (DIR)
+        entry[0x10] = 0x0F
+        
+        // Key pointer: block number of subdirectory
+        entry[0x11] = UInt8(keyBlock & 0xFF)
+        entry[0x12] = UInt8((keyBlock >> 8) & 0xFF)
+        
+        // Blocks used: 1 block initially
+        entry[0x13] = 0x01
+        entry[0x14] = 0x00
+        
+        // EOF: 512 bytes (one block)
+        entry[0x15] = 0x00
+        entry[0x16] = 0x02  // 512 = 0x0200
+        entry[0x17] = 0x00
+        
+        // Creation date/time
+        let now = Date()
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: now)
+        
+        if let year = components.year, let month = components.month, let day = components.day {
+            let proDOSYear = year - 1900
+            let dateWord = UInt16((proDOSYear << 9) | (month << 5) | day)
+            entry[0x18] = UInt8(dateWord & 0xFF)
+            entry[0x19] = UInt8((dateWord >> 8) & 0xFF)
+        }
+        
+        if let hour = components.hour, let minute = components.minute {
+            let timeWord = UInt16((minute << 8) | hour)
+            entry[0x1A] = UInt8(timeWord & 0xFF)
+            entry[0x1B] = UInt8((timeWord >> 8) & 0xFF)
+        }
+        
+        // Version: 0x00
+        entry[0x1C] = 0x00
+        
+        // Min version: 0x00
+        entry[0x1D] = 0x00
+        
+        // Access: 0xE3 (full access)
+        entry[0x1E] = 0xE3
+        
+        // Aux type: 0x0000 for directories
+        entry[0x1F] = 0x00
+        entry[0x20] = 0x00
+        
+        // Last modified date (same as creation)
+        entry[0x21] = entry[0x18]
+        entry[0x22] = entry[0x19]
+        entry[0x23] = entry[0x1A]
+        entry[0x24] = entry[0x1B]
+        
+        // Header pointer (for subdirectories, points to self)
+        entry[0x25] = UInt8(keyBlock & 0xFF)
+        entry[0x26] = UInt8((keyBlock >> 8) & 0xFF)
+        
+        memcpy(bytes + entryOffset, entry, ENTRY_LENGTH)
+        
+        print("   📝 Created directory entry for '\(dirName)' at offset \(entryOffset)")
+    }
+    
     // MARK: - Update File Count
     
     private func incrementFileCount(_ diskData: NSMutableData) {
@@ -965,6 +1191,11 @@ class ProDOSWriter {
                     
                     // Free master index block
                     blocksToFree.append(keyBlock)
+                } else if storageType == 0xD {
+                    // Subdirectory - just the header block (like seedling)
+                    // Subdirectories should be empty before deletion
+                    blocksToFree.append(keyBlock)
+                    print("   📂 Deleting subdirectory (1 block)")
                 }
                 
                 print("   🔓 Freeing \(blocksToFree.count) blocks")

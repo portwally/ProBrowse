@@ -72,6 +72,25 @@ struct DiskBrowserPane: View {
                     }
                 }
                 
+                // Back button and current path
+                HStack(spacing: 8) {
+                    Button(action: {
+                        viewModel.navigateBack()
+                    }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!viewModel.canGoBack && viewModel.currentDirectory == nil)
+                    .opacity((viewModel.canGoBack || viewModel.currentDirectory != nil) ? 1.0 : 0.3)
+                    
+                    if let currentDir = viewModel.currentDirectory {
+                        Text("📂 \(currentDir.name)")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                }
+                
                 Spacer()
                 
                 // Filename
@@ -133,9 +152,19 @@ struct DiskBrowserPane: View {
     // MARK: - File List View
     
     private func fileListView(catalog: DiskCatalog) -> some View {
-        ScrollView {
+        let entriesToShow: [DiskCatalogEntry] = {
+            if let currentDir = viewModel.currentDirectory {
+                // Show children of current directory
+                return currentDir.children ?? []
+            } else {
+                // Show root entries
+                return catalog.rootEntries
+            }
+        }()
+        
+        return ScrollView {
             VStack(spacing: 0) {
-                ForEach(catalog.rootEntries) { entry in
+                ForEach(entriesToShow) { entry in
                     catalogEntryRowWithDrag(entry: entry)
                 }
             }
@@ -150,6 +179,9 @@ struct DiskBrowserPane: View {
             isSelected: { viewModel.isSelected($0) },
             onToggle: { entry, cmd, shift in
                 viewModel.toggleSelection(entry, commandPressed: cmd, shiftPressed: shift)
+            },
+            onDoubleClick: { entry in
+                viewModel.navigateInto(entry)
             },
             level: 0,
             expandAllTrigger: viewModel.expandAllTrigger,

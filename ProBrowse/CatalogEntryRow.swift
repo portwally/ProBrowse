@@ -11,16 +11,18 @@ struct CatalogEntryRow: View {
     let entry: DiskCatalogEntry
     let isSelected: (DiskCatalogEntry) -> Bool
     let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void  // entry, command, shift
+    let onDoubleClick: ((DiskCatalogEntry) -> Void)?  // NEW: double-click navigation
     let level: Int
     let expandAllTrigger: Bool
     @ObservedObject var columnWidths: ColumnWidths
     
     @State private var isExpanded: Bool
     
-    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, level: Int, expandAllTrigger: Bool, columnWidths: ColumnWidths) {
+    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, onDoubleClick: ((DiskCatalogEntry) -> Void)? = nil, level: Int, expandAllTrigger: Bool, columnWidths: ColumnWidths) {
         self.entry = entry
         self.isSelected = isSelected
         self.onToggle = onToggle
+        self.onDoubleClick = onDoubleClick
         self.level = level
         self.expandAllTrigger = expandAllTrigger
         self.columnWidths = columnWidths
@@ -36,6 +38,7 @@ struct CatalogEntryRow: View {
                 isExpanded: $isExpanded,
                 level: level,
                 onToggle: onToggle,
+                onDoubleClick: onDoubleClick,
                 columnWidths: columnWidths
             )
             
@@ -46,6 +49,7 @@ struct CatalogEntryRow: View {
                         entry: child,
                         isSelected: isSelected,
                         onToggle: onToggle,
+                        onDoubleClick: onDoubleClick,
                         level: level + 1,
                         expandAllTrigger: expandAllTrigger,
                         columnWidths: columnWidths
@@ -69,6 +73,7 @@ struct CatalogEntryRowContent: View {
     @Binding var isExpanded: Bool
     let level: Int
     let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void
+    let onDoubleClick: ((DiskCatalogEntry) -> Void)?
     @ObservedObject var columnWidths: ColumnWidths
     
     var body: some View {
@@ -89,8 +94,8 @@ struct CatalogEntryRowContent: View {
                                 .frame(width: CGFloat(level * 16))
                         }
                         
-                        // Expand/Collapse for folders
-                        if entry.isDirectory && entry.children != nil && !entry.children!.isEmpty {
+                        // Expand/Collapse for ALL directories (even empty ones)
+                        if entry.isDirectory {
                             Button(action: { isExpanded.toggle() }) {
                                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                                     .font(.system(size: 10))
@@ -175,6 +180,13 @@ struct CatalogEntryRowContent: View {
         }
         .frame(height: 22)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            // Double-click: navigate into directory
+            if entry.isDirectory, let onDoubleClick = onDoubleClick {
+                print("🖱️ Double-click on directory: \(entry.name)")
+                onDoubleClick(entry)
+            }
+        }
         .onTapGesture {
             let event = NSApp.currentEvent
             let commandPressed = event?.modifierFlags.contains(.command) ?? false

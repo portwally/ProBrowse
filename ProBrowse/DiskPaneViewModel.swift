@@ -16,12 +16,20 @@ class DiskPaneViewModel: ObservableObject {
     @Published var expandAllTrigger = false
     @Published var showingFilePicker = false
     
+    // Navigation state
+    @Published var currentDirectory: DiskCatalogEntry?
+    @Published var navigationPath: [DiskCatalogEntry] = []
+    
     private var lastSelectedEntry: DiskCatalogEntry?
     
     var isAllSelected: Bool {
         guard let catalog = catalog else { return false }
         let allIds = Set(catalog.allEntries.map { $0.id })
         return !allIds.isEmpty && selectedEntries == allIds
+    }
+    
+    var canGoBack: Bool {
+        return !navigationPath.isEmpty
     }
     
     // MARK: - Load Disk Image
@@ -37,6 +45,9 @@ class DiskPaneViewModel: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             self.diskImagePath = url
+            
+            // Reset navigation
+            navigateToRoot()
             
             // Try to parse as ProDOS
             if let catalog = try? DiskImageParser.parseProDOS(data: data, diskName: url.lastPathComponent) {
@@ -154,6 +165,52 @@ class DiskPaneViewModel: ObservableObject {
     
     func expandAll() {
         expandAllTrigger.toggle()
+    }
+    
+    // MARK: - Directory Navigation
+    
+    func navigateInto(_ directory: DiskCatalogEntry) {
+        guard directory.isDirectory else { return }
+        
+        // Add current directory to navigation path
+        if let current = currentDirectory {
+            navigationPath.append(current)
+        }
+        
+        // Set new current directory
+        currentDirectory = directory
+        
+        // Clear selection
+        selectedEntries = []
+        
+        print("📂 Navigated into: \(directory.name)")
+    }
+    
+    func navigateBack() {
+        guard !navigationPath.isEmpty else {
+            // Already at root
+            currentDirectory = nil
+            return
+        }
+        
+        // Pop last directory from path
+        currentDirectory = navigationPath.popLast()
+        
+        // Clear selection
+        selectedEntries = []
+        
+        if let current = currentDirectory {
+            print("📂 Navigated back to: \(current.name)")
+        } else {
+            print("📂 Navigated back to root")
+        }
+    }
+    
+    func navigateToRoot() {
+        navigationPath = []
+        currentDirectory = nil
+        selectedEntries = []
+        print("📂 Navigated to root")
     }
     
     func getSelectedEntries() -> [DiskCatalogEntry] {
@@ -325,18 +382,28 @@ class DiskPaneViewModel: ObservableObject {
         let entry = entries[index]
         
         if entry.isDirectory {
-            // Handle directory by copying all its children (flattened)
+            // Create the directory itself first!
             print("📁 Processing directory: \(entry.name)")
             
-            if let children = entry.children, !children.isEmpty {
-                // Recursively copy all files from this directory
-                copyDirectoryContents(children, from: sourceImagePath, to: targetImagePath) {
-                    // After all children copied, move to next entry
+            ProDOSWriter.shared.createDirectory(diskImagePath: targetImagePath, directoryName: entry.name, parentPath: "/") { success, message in
+                if success {
+                    print("   ✅ Created directory \(entry.name)")
+                    
+                    // Now copy children INTO this directory
+                    if let children = entry.children, !children.isEmpty {
+                        // TODO: We need to copy into the subdirectory, not root!
+                        // For now, skip children copying since we can't specify target directory yet
+                        print("   ⚠️ Skipping \(children.count) children - subdirectory file writing not yet implemented")
+                        self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                    } else {
+                        // Empty directory, move to next
+                        self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                    }
+                } else {
+                    print("   ❌ Failed to create directory: \(message)")
+                    // Skip this directory and move to next
                     self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
                 }
-            } else {
-                // Empty directory, skip to next
-                copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
             }
             return
         }
@@ -364,35 +431,67 @@ class DiskPaneViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Copy Directory Contents (Recursive Helper)
+    // MARK: - Copy Directory Contents (With Structure)
     
     private func copyDirectoryContents(_ entries: [DiskCatalogEntry], from sourceImagePath: URL, to targetImagePath: URL, completion: @escaping () -> Void) {
-        // Flatten all files from directory tree
-        var flattenedFiles: [DiskCatalogEntry] = []
-        
-        func collectFiles(_ entries: [DiskCatalogEntry]) {
-            for entry in entries {
-                if entry.isDirectory {
-                    // Recursively collect from subdirectories
-                    if let children = entry.children {
-                        collectFiles(children)
-                    }
-                } else {
-                    // Add file to flat list
-                    flattenedFiles.append(entry)
-                }
-            }
+        // Copy directory structure recursively
+        copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: "/", index: 0, completion: completion)
+    }
+    
+    private func copyEntriesRecursively(entries: [DiskCatalogEntry], to targetImagePath: URL, parentPath: String, index: Int, completion: @escaping () -> Void) {
+        guard index < entries.count else {
+            // All entries copied
+            completion()
+            return
         }
         
-        collectFiles(entries)
+        let entry = entries[index]
         
-        print("📋 Flattened \(flattenedFiles.count) files from directory tree")
-        
-        // Copy all flattened files
-        if !flattenedFiles.isEmpty {
-            copyNextFileFromList(files: flattenedFiles, index: 0, from: sourceImagePath, to: targetImagePath, completion: completion)
+        if entry.isDirectory {
+            // Create subdirectory first
+            print("📁 Creating subdirectory: \(entry.name)")
+            
+            ProDOSWriter.shared.createDirectory(diskImagePath: targetImagePath, directoryName: entry.name, parentPath: parentPath) { success, message in
+                if success {
+                    print("   ✅ Created directory \(entry.name)")
+                    
+                    // Copy children into this subdirectory
+                    if let children = entry.children, !children.isEmpty {
+                        let newPath = parentPath + entry.name + "/"
+                        self.copyEntriesRecursively(entries: children, to: targetImagePath, parentPath: newPath, index: 0) {
+                            // After children copied, move to next sibling
+                            self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
+                        }
+                    } else {
+                        // Empty directory, move to next
+                        self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
+                    }
+                } else {
+                    print("   ❌ Failed to create directory: \(message)")
+                    // Skip this directory and move to next
+                    self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
+                }
+            }
         } else {
-            completion()
+            // Copy file
+            print("   Copying file: \(entry.name)")
+            
+            ProDOSWriter.shared.addFile(
+                diskImagePath: targetImagePath,
+                fileName: entry.name,
+                fileData: entry.data,
+                fileType: entry.fileType,
+                auxType: entry.auxType
+            ) { addSuccess, message in
+                if addSuccess {
+                    print("   ✅ Copied \(entry.name)")
+                } else {
+                    print("   ❌ Failed: \(message)")
+                }
+                
+                // Continue with next entry
+                self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
+            }
         }
     }
     
@@ -455,12 +554,8 @@ class DiskPaneViewModel: ObservableObject {
         }
         
         let entry = entries[index]
-        guard !entry.isDirectory else {
-            // Skip directories
-            deleteNextFile(entries: entries, index: index + 1, from: diskImagePath)
-            return
-        }
         
+        // Delete file or directory
         ProDOSWriter.shared.deleteFile(diskImagePath: diskImagePath, fileName: entry.name) { success, message in
             if success {
                 print("✅ Deleted \(entry.name)")
