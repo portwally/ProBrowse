@@ -13,123 +13,178 @@ struct CatalogEntryRow: View {
     let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void  // entry, command, shift
     let level: Int
     let expandAllTrigger: Bool
+    @ObservedObject var columnWidths: ColumnWidths
     
     @State private var isExpanded: Bool
     
-    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, level: Int, expandAllTrigger: Bool) {
+    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, level: Int, expandAllTrigger: Bool, columnWidths: ColumnWidths) {
         self.entry = entry
         self.isSelected = isSelected
         self.onToggle = onToggle
         self.level = level
         self.expandAllTrigger = expandAllTrigger
+        self.columnWidths = columnWidths
         _isExpanded = State(initialValue: expandAllTrigger)
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            // Main Row
-            HStack(spacing: 8) {
-                // Indentation for hierarchy
-                if level > 0 {
-                    ForEach(0..<level, id: \.self) { _ in
-                        Text("  ")
-                    }
-                    Text("└─")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                // Expand/Collapse for folders
-                if entry.isDirectory && entry.children != nil && !entry.children!.isEmpty {
-                    Button(action: { isExpanded.toggle() }) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                } else if entry.isDirectory {
-                    Spacer()
-                        .frame(width: 20)
-                }
-                
-                Text(entry.icon)
-                    .font(.title3)
-                
-                Text(entry.name)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fontWeight(entry.isDirectory ? .semibold : .regular)
-                
-                Text(entry.typeDescription)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(width: 80, alignment: .leading)
-                
-                Text(entry.sizeString)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundColor(.secondary)
-                    .frame(width: 80, alignment: .trailing)
-                
-                if let loadAddr = entry.loadAddress {
-                    Text(String(format: "$%04X", loadAddr))
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundColor(.secondary)
-                        .frame(width: 60, alignment: .trailing)
-                } else {
-                    Text("-")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .frame(width: 60, alignment: .trailing)
-                }
-            }
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
-            .background(isSelected(entry) ? Color.blue.opacity(0.1) : Color.clear)
-            .contentShape(Rectangle())
-            .onTapGesture(count: 1) {
-                let commandPressed = NSEvent.modifierFlags.contains(.command)
-                let shiftPressed = NSEvent.modifierFlags.contains(.shift)
-                onToggle(entry, commandPressed, shiftPressed)
-            }
+            // Main Row with columns
+            CatalogEntryRowContent(
+                entry: entry,
+                isSelected: isSelected(entry),
+                isExpanded: $isExpanded,
+                level: level,
+                onToggle: onToggle,
+                columnWidths: columnWidths
+            )
             
-            // Show children when expanded
-            if entry.isDirectory && isExpanded, let children = entry.children {
+            // Children (if expanded)
+            if isExpanded, let children = entry.children, !children.isEmpty {
                 ForEach(children) { child in
-                    CatalogEntryRowRecursive(
+                    CatalogEntryRow(
                         entry: child,
                         isSelected: isSelected,
                         onToggle: onToggle,
                         level: level + 1,
-                        expandAllTrigger: expandAllTrigger
+                        expandAllTrigger: expandAllTrigger,
+                        columnWidths: columnWidths
                     )
                 }
             }
         }
-        .onChange(of: expandAllTrigger) {
-            isExpanded = expandAllTrigger
+        .onChange(of: expandAllTrigger) { oldValue, newValue in
+            if entry.isDirectory && entry.children != nil && !entry.children!.isEmpty {
+                isExpanded = newValue
+            }
         }
     }
 }
 
-// Recursive wrapper
-struct CatalogEntryRowRecursive: View {
+// MARK: - Catalog Entry Row Content
+
+struct CatalogEntryRowContent: View {
     let entry: DiskCatalogEntry
-    let isSelected: (DiskCatalogEntry) -> Bool
-    let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void
+    let isSelected: Bool
+    @Binding var isExpanded: Bool
     let level: Int
-    let expandAllTrigger: Bool
+    let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void
+    @ObservedObject var columnWidths: ColumnWidths
     
     var body: some View {
-        CatalogEntryRow(
-            entry: entry,
-            isSelected: isSelected,
-            onToggle: onToggle,
-            level: level,
-            expandAllTrigger: expandAllTrigger
-        )
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                // Background
+                (isSelected ? Color.accentColor.opacity(0.3) : Color.clear)
+                
+                HStack(spacing: 0) {
+                    // Name Column (with indentation and expand button)
+                    HStack(spacing: 4) {
+                        // Padding at start
+                        Spacer().frame(width: 8)
+                        
+                        // Indentation
+                        if level > 0 {
+                            Spacer()
+                                .frame(width: CGFloat(level * 16))
+                        }
+                        
+                        // Expand/Collapse for folders
+                        if entry.isDirectory && entry.children != nil && !entry.children!.isEmpty {
+                            Button(action: { isExpanded.toggle() }) {
+                                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 16, height: 16)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Spacer().frame(width: 16)
+                        }
+                        
+                        Text(entry.icon)
+                            .font(.body)
+                        
+                        Text(entry.name)
+                            .lineLimit(1)
+                            .fontWeight(entry.isDirectory ? .semibold : .regular)
+                        
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: columnWidths.nameWidth, alignment: .leading)
+                    
+                    Divider().frame(width: 1).opacity(0.3)
+                    
+                    // Type Column
+                    HStack(spacing: 0) {
+                        Spacer().frame(width: 8)
+                        Text(entry.fileTypeString)
+                            .font(.caption)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: columnWidths.typeWidth, alignment: .leading)
+                    
+                    Divider().frame(width: 1).opacity(0.3)
+                    
+                    // Aux Column
+                    HStack(spacing: 0) {
+                        Spacer().frame(width: 8)
+                        Text(String(format: "$%04X", entry.auxType))
+                            .font(.caption)
+                            .monospacedDigit()
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: columnWidths.auxWidth, alignment: .leading)
+                    
+                    Divider().frame(width: 1).opacity(0.3)
+                    
+                    // Size Column (in bytes)
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        Text("\(entry.size)")
+                            .font(.caption)
+                            .monospacedDigit()
+                        Spacer().frame(width: 8)
+                    }
+                    .frame(width: columnWidths.sizeWidth, alignment: .trailing)
+                    
+                    Divider().frame(width: 1).opacity(0.3)
+                    
+                    // Modified Column
+                    HStack(spacing: 0) {
+                        Spacer().frame(width: 8)
+                        Text(entry.modificationDate ?? "—")
+                            .font(.caption)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: columnWidths.modifiedWidth, alignment: .leading)
+                    
+                    Divider().frame(width: 1).opacity(0.3)
+                    
+                    // Created Column
+                    HStack(spacing: 0) {
+                        Spacer().frame(width: 8)
+                        Text(entry.creationDate ?? "—")
+                            .font(.caption)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .frame(height: 22)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            let event = NSApp.currentEvent
+            let commandPressed = event?.modifierFlags.contains(.command) ?? false
+            let shiftPressed = event?.modifierFlags.contains(.shift) ?? false
+            
+            print("🔘 Toggle selection for: \(entry.name)")
+            print("   Current selected count: \(isSelected ? 1 : 0)")
+            print("   Command: \(commandPressed), Shift: \(shiftPressed)")
+            
+            onToggle(entry, commandPressed, shiftPressed)
+        }
     }
 }

@@ -23,8 +23,10 @@ struct DiskCatalogEntry: Identifiable, Codable {
     let isImage: Bool
     let isDirectory: Bool
     let children: [DiskCatalogEntry]?
+    let modificationDate: String?
+    let creationDate: String?
     
-    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, auxType: UInt16 = 0, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?) {
+    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, auxType: UInt16 = 0, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?, modificationDate: String? = nil, creationDate: String? = nil) {
         self.id = id
         self.name = name
         self.fileType = fileType
@@ -38,6 +40,8 @@ struct DiskCatalogEntry: Identifiable, Codable {
         self.isImage = isImage
         self.isDirectory = isDirectory
         self.children = children
+        self.modificationDate = modificationDate
+        self.creationDate = creationDate
     }
     
     var sizeString: String {
@@ -51,7 +55,8 @@ struct DiskCatalogEntry: Identifiable, Codable {
     }
     
     var fileTypeInfo: ProDOSFileTypeInfo {
-        return ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: loadAddress)
+        let aux = loadAddress.map { UInt16(clamping: $0) } ?? 0
+        return ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: aux)
     }
     
     var icon: String {

@@ -41,14 +41,24 @@ struct ContentView: View {
                 // Dual Pane Browser
                 HStack(spacing: 0) {
                     // Left Pane
-                    DiskBrowserPane(viewModel: leftPaneVM, targetViewModel: rightPaneVM, paneTitle: "Left Disk")
-                        .frame(minWidth: 400)
+                    DiskBrowserPane(
+                        viewModel: leftPaneVM,
+                        targetViewModel: rightPaneVM,
+                        columnWidths: ColumnWidths.leftPane,
+                        paneTitle: "Left Disk"
+                    )
+                    .frame(minWidth: 400)
                     
                     Divider()
                     
                     // Right Pane
-                    DiskBrowserPane(viewModel: rightPaneVM, targetViewModel: leftPaneVM, paneTitle: "Right Disk")
-                        .frame(minWidth: 400)
+                    DiskBrowserPane(
+                        viewModel: rightPaneVM,
+                        targetViewModel: leftPaneVM,
+                        columnWidths: ColumnWidths.rightPane,
+                        paneTitle: "Right Disk"
+                    )
+                    .frame(minWidth: 400)
                 }
             }
             .overlay(

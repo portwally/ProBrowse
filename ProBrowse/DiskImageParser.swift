@@ -10,6 +10,60 @@ import Combine
 
 class DiskImageParser {
     
+    // MARK: - Date/Time Parsing
+    
+    private static func decodeProDOSDateTime(_ dateBytes: [UInt8], _ timeBytes: [UInt8]) -> String? {
+        guard dateBytes.count >= 2 else { return nil }
+        
+        let dateWord = UInt16(dateBytes[0]) | (UInt16(dateBytes[1]) << 8)
+        
+        // Check if date is zero (unset)
+        guard dateWord != 0 else { return nil }
+        
+        let year = Int((dateWord >> 9) & 0x7F) + 1900
+        let month = Int((dateWord >> 5) & 0x0F)
+        let day = Int(dateWord & 0x1F)
+        
+        // Validate date
+        guard month >= 1, month <= 12, day >= 1, day <= 31 else {
+            return nil
+        }
+        
+        // Parse time (optional)
+        var hour = 0
+        var minute = 0
+        if timeBytes.count >= 2 {
+            let timeWord = UInt16(timeBytes[0]) | (UInt16(timeBytes[1]) << 8)
+            hour = Int(timeWord & 0xFF)
+            minute = Int((timeWord >> 8) & 0xFF)
+            
+            // Validate time (some disks have invalid time data)
+            if hour >= 24 || minute >= 60 {
+                hour = 0
+                minute = 0
+            }
+        }
+        
+        // Create Date object
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        components.hour = hour
+        components.minute = minute
+        
+        guard let date = Calendar.current.date(from: components) else {
+            return nil
+        }
+        
+        // Format using system locale
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        
+        return formatter.string(from: date)
+    }
+    
     // MARK: - Main Entry Point
     
     static func parseProDOS(data: Data, diskName: String) throws -> DiskCatalog? {
@@ -107,6 +161,15 @@ class DiskImageParser {
                 let eof = Int(data[entryOffset + 21]) | (Int(data[entryOffset + 22]) << 8) | (Int(data[entryOffset + 23]) << 16)
                 let auxType = Int(data[entryOffset + 31]) | (Int(data[entryOffset + 32]) << 8)
                 
+                // Extract dates (ProDOS format: 2 bytes date + 2 bytes time)
+                let creationDateBytes = [data[entryOffset + 24], data[entryOffset + 25]]
+                let creationTimeBytes = [data[entryOffset + 26], data[entryOffset + 27]]
+                let modDateBytes = [data[entryOffset + 33], data[entryOffset + 34]]
+                let modTimeBytes = [data[entryOffset + 35], data[entryOffset + 36]]
+                
+                let creationDate = decodeProDOSDateTime(creationDateBytes, creationTimeBytes)
+                let modificationDate = decodeProDOSDateTime(modDateBytes, modTimeBytes)
+                
                 // Handle directory
                 if entryStorageType == 0x0D {
                     let children = readProDOSDirectory(data: data, startBlock: keyPointer, blockSize: blockSize)
@@ -123,7 +186,9 @@ class DiskImageParser {
                         data: Data(),
                         isImage: false,
                         isDirectory: true,
-                        children: children
+                        children: children,
+                        modificationDate: modificationDate,
+                        creationDate: creationDate
                     ))
                 } else {
                     // Handle file
@@ -131,10 +196,13 @@ class DiskImageParser {
                         
                         let isGraphicsFile = [0x08, 0xC0, 0xC1].contains(fileType)
                         
+                        // Get file type info for proper shortName
+                        let fileTypeInfo = ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: UInt16(auxType))
+                        
                         entries.append(DiskCatalogEntry(
                             name: fileName,
                             fileType: fileType,
-                            fileTypeString: String(format: "$%02X", fileType),
+                            fileTypeString: fileTypeInfo.shortName,
                             auxType: UInt16(auxType),
                             size: eof,
                             blocks: blocksUsed,
@@ -143,7 +211,9 @@ class DiskImageParser {
                             data: fileData,
                             isImage: isGraphicsFile,
                             isDirectory: false,
-                            children: nil
+                            children: nil,
+                            modificationDate: modificationDate,
+                            creationDate: creationDate
                         ))
                     }
                 }

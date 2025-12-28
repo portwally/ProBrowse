@@ -75,7 +75,7 @@ class ProDOSWriter {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 // Sanitize filename for ProDOS (remove invalid chars, max 15 chars)
-                var sanitizedName = self.sanitizeProDOSFilename(fileName)
+                let sanitizedName = self.sanitizeProDOSFilename(fileName)
                 
                 // Load entire disk image into NSMutableData for safe byte manipulation
                 guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
@@ -893,7 +893,7 @@ class ProDOSWriter {
                 print("   File: \(fileName)")
                 
                 // Find the file entry
-                guard let (dirBlock, entryOffset) = self.findFileEntry(Data(referencing: diskData), fileName: fileName) else {
+                guard let (_, entryOffset) = self.findFileEntry(Data(referencing: diskData), fileName: fileName) else {
                     DispatchQueue.main.async {
                         completion(false, "File not found")
                     }
