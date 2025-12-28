@@ -391,10 +391,15 @@ class DiskPaneViewModel: ObservableObject {
                     
                     // Now copy children INTO this directory
                     if let children = entry.children, !children.isEmpty {
-                        // TODO: We need to copy into the subdirectory, not root!
-                        // For now, skip children copying since we can't specify target directory yet
-                        print("   ⚠️ Skipping \(children.count) children - subdirectory file writing not yet implemented")
-                        self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                        print("   📦 Copying \(children.count) children into /\(entry.name)/")
+                        let childPath = "/\(entry.name)/"
+                        
+                        // Recursively copy all children
+                        self.copyEntriesRecursively(entries: children, to: targetImagePath, parentPath: childPath, index: 0) {
+                            // After all children copied, move to next sibling
+                            print("   ✅ Finished copying children of \(entry.name)")
+                            self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                        }
                     } else {
                         // Empty directory, move to next
                         self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
@@ -473,18 +478,19 @@ class DiskPaneViewModel: ObservableObject {
                 }
             }
         } else {
-            // Copy file
-            print("   Copying file: \(entry.name)")
+            // Copy file to parent directory
+            print("   Copying file: \(entry.name) to \(parentPath)")
             
             ProDOSWriter.shared.addFile(
                 diskImagePath: targetImagePath,
                 fileName: entry.name,
                 fileData: entry.data,
                 fileType: entry.fileType,
-                auxType: entry.auxType
+                auxType: entry.auxType,
+                parentPath: parentPath  // NEW: specify parent directory!
             ) { addSuccess, message in
                 if addSuccess {
-                    print("   ✅ Copied \(entry.name)")
+                    print("   ✅ Copied \(entry.name) to \(parentPath)")
                 } else {
                     print("   ❌ Failed: \(message)")
                 }

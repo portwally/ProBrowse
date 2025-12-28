@@ -70,7 +70,9 @@ class ProDOSWriter {
     // MARK: - Add File to Disk Image
     
     /// Adds a file to a ProDOS disk image
-    func addFile(diskImagePath: URL, fileName: String, fileData: Data, fileType: UInt8, auxType: UInt16, completion: @escaping (Bool, String) -> Void) {
+    /// - Parameters:
+    ///   - parentPath: Path to parent directory (e.g., "/" for root, "/SYSTEM" for subdirectory)
+    func addFile(diskImagePath: URL, fileName: String, fileData: Data, fileType: UInt8, auxType: UInt16, parentPath: String = "/", completion: @escaping (Bool, String) -> Void) {
         
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -110,14 +112,25 @@ class ProDOSWriter {
                 print("   Original: \(fileName)")
                 print("   Sanitized: \(sanitizedName)")
                 print("   Final name: \(finalName)")
+                print("   Parent path: \(parentPath)")
                 print("   Size: \(fileData.count) bytes")
                 print("   Type: $\(String(format: "%02X", fileType))")
                 print("   Image: \(diskImagePath.lastPathComponent)")
                 
-                // 1. Find free directory entry
-                guard let (dirBlock, entryOffset) = self.findFreeDirectoryEntry(diskData) else {
+                // Find target directory block
+                guard let targetDirBlock = self.findDirectoryBlock(diskData, path: parentPath) else {
                     DispatchQueue.main.async {
-                        completion(false, "No free directory entries")
+                        completion(false, "Parent directory not found: \(parentPath)")
+                    }
+                    return
+                }
+                
+                print("   📂 Target directory block: \(targetDirBlock)")
+                
+                // 1. Find free directory entry in target directory
+                guard let (dirBlock, entryOffset) = self.findFreeDirectoryEntry(diskData, dirBlock: targetDirBlock) else {
+                    DispatchQueue.main.async {
+                        completion(false, "No free directory entries in \(parentPath)")
                     }
                     return
                 }
@@ -194,8 +207,8 @@ class ProDOSWriter {
                                         fileName: finalName, fileType: fileType, auxType: auxType,
                                         keyBlock: keyBlock, blockCount: totalBlocks, fileSize: fileData.count)
                 
-                // 5. Update file count in volume header
-                self.incrementFileCount(diskData)
+                // 5. Update file count in target directory
+                self.incrementFileCount(diskData, dirBlock: targetDirBlock)
                 
                 // 6. Write modified disk image back to file
                 try diskData.write(to: diskImagePath, options: .atomic)
@@ -253,9 +266,87 @@ class ProDOSWriter {
     
     // MARK: - Find Free Directory Entry
     
-    private func findFreeDirectoryEntry(_ diskData: NSMutableData) -> (block: Int, offset: Int)? {
+    // MARK: - Find Directory Block by Path
+    
+    /// Finds the directory block for a given path
+    /// - Parameter path: Directory path (e.g., "/" for root, "/SYSTEM" for subdirectory)
+    /// - Returns: Block number of the directory, or nil if not found
+    private func findDirectoryBlock(_ diskData: NSMutableData, path: String) -> Int? {
+        // Root directory
+        if path == "/" {
+            return VOLUME_DIR_BLOCK
+        }
+        
+        // Parse path components (e.g., "/SYSTEM/FSTS" -> ["SYSTEM", "FSTS"])
+        let components = path.split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return VOLUME_DIR_BLOCK }
+        
         let bytes = diskData.bytes.assumingMemoryBound(to: UInt8.self)
-        var currentBlock = VOLUME_DIR_BLOCK
+        var currentDirBlock = VOLUME_DIR_BLOCK
+        
+        // Navigate through each path component
+        for dirName in components {
+            guard let (_, entryOffset) = findFileEntryInDirectory(diskData, dirBlock: currentDirBlock, fileName: dirName) else {
+                print("   ❌ Directory '\(dirName)' not found in path")
+                return nil
+            }
+            
+            // Check if it's actually a directory
+            let storageType = bytes[entryOffset] >> 4
+            guard storageType == 0xD else {
+                print("   ❌ '\(dirName)' is not a directory (storage type: \(storageType))")
+                return nil
+            }
+            
+            // Get the subdirectory's block
+            let keyBlockLo = bytes[entryOffset + 0x11]
+            let keyBlockHi = bytes[entryOffset + 0x12]
+            currentDirBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
+        }
+        
+        return currentDirBlock
+    }
+    
+    /// Finds a file entry within a specific directory block
+    private func findFileEntryInDirectory(_ diskData: NSMutableData, dirBlock: Int, fileName: String) -> (block: Int, offset: Int)? {
+        let bytes = diskData.bytes.assumingMemoryBound(to: UInt8.self)
+        var currentBlock = dirBlock
+        var entryIndex = 1  // Skip header entry
+        
+        while currentBlock != 0 {
+            let blockOffset = currentBlock * BLOCK_SIZE
+            
+            while entryIndex < ENTRIES_PER_BLOCK {
+                let entryOffset = blockOffset + 4 + (entryIndex * ENTRY_LENGTH)
+                let storageType = bytes[entryOffset] >> 4
+                
+                if storageType != 0 {
+                    // Read entry name
+                    let nameLength = Int(bytes[entryOffset] & 0x0F)
+                    let nameBytes = Array(UnsafeBufferPointer(start: bytes + entryOffset + 1, count: min(nameLength, 15)))
+                    let entryName = String(bytes: nameBytes, encoding: .ascii) ?? ""
+                    
+                    if entryName.uppercased() == fileName.uppercased() {
+                        return (currentBlock, entryOffset)
+                    }
+                }
+                
+                entryIndex += 1
+            }
+            
+            // Move to next block in directory chain
+            let nextBlockLo = Int(bytes[blockOffset + 2])
+            let nextBlockHi = Int(bytes[blockOffset + 3])
+            currentBlock = nextBlockLo | (nextBlockHi << 8)
+            entryIndex = 0
+        }
+        
+        return nil
+    }
+    
+    private func findFreeDirectoryEntry(_ diskData: NSMutableData, dirBlock: Int? = nil) -> (block: Int, offset: Int)? {
+        let bytes = diskData.bytes.assumingMemoryBound(to: UInt8.self)
+        var currentBlock = dirBlock ?? VOLUME_DIR_BLOCK
         var entryIndex = 1  // Skip header entry
         
         while currentBlock != 0 {
@@ -455,69 +546,69 @@ class ProDOSWriter {
     /// Creates a new subdirectory in the disk image
     func createDirectory(diskImagePath: URL, directoryName: String, parentPath: String = "/", completion: @escaping (Bool, String) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                // Sanitize directory name
-                let sanitizedName = self.sanitizeProDOSFilename(directoryName)
-                
-                // Load disk image
-                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
-                    DispatchQueue.main.async {
-                        completion(false, "Could not read disk image")
-                    }
-                    return
-                }
-                
-                let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
-                
-                // Find parent directory (currently only support root "/")
-                let parentDirBlock = self.VOLUME_DIR_BLOCK
-                
-                // Find free directory entry in parent
-                guard let (entryDirBlock, entryOffset) = self.findFreeDirectoryEntry(diskData) else {
-                    DispatchQueue.main.async {
-                        completion(false, "No free directory entries")
-                    }
-                    return
-                }
-                
-                // Allocate a block for the new subdirectory
-                guard let blocks = self.allocateBlocks(diskData, count: 1),
-                      let dirBlock = blocks.first else {
-                    DispatchQueue.main.async {
-                        completion(false, "Could not allocate block for directory")
-                    }
-                    return
-                }
-                
-                print("📁 Creating directory '\(sanitizedName)' at block \(dirBlock)")
-                
-                // Create subdirectory header block
-                self.createSubdirectoryHeader(diskData, dirBlock: dirBlock, dirName: sanitizedName, parentBlock: parentDirBlock, parentEntryNum: 0, dataOffset: dataOffset)
-                
-                // Create directory entry in parent
-                self.createDirectoryEntryForSubdir(diskData, dirBlock: entryDirBlock, entryOffset: entryOffset, dirName: sanitizedName, keyBlock: dirBlock, dataOffset: dataOffset)
-                
-                // Increment file count in parent
-                self.incrementFileCount(diskData)
-                
-                // Write back to disk
-                guard diskData.write(to: diskImagePath, atomically: true) else {
-                    DispatchQueue.main.async {
-                        completion(false, "Failed to write disk image")
-                    }
-                    return
-                }
-                
-                print("✅ Directory '\(sanitizedName)' created successfully")
-                
+            // Sanitize directory name
+            let sanitizedName = self.sanitizeProDOSFilename(directoryName)
+            
+            // Load disk image
+            guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
                 DispatchQueue.main.async {
-                    completion(true, "Directory created")
+                    completion(false, "Could not read disk image")
                 }
-                
-            } catch {
+                return
+            }
+            
+            let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+            
+            // Find parent directory block using path
+            guard let parentDirBlock = self.findDirectoryBlock(diskData, path: parentPath) else {
                 DispatchQueue.main.async {
-                    completion(false, "Error: \(error.localizedDescription)")
+                    completion(false, "Parent directory not found: \(parentPath)")
                 }
+                return
+            }
+            
+            print("   📂 Parent directory block: \(parentDirBlock) (path: \(parentPath))")
+            
+            // Find free directory entry in parent
+            guard let (entryDirBlock, entryOffset) = self.findFreeDirectoryEntry(diskData, dirBlock: parentDirBlock) else {
+                DispatchQueue.main.async {
+                    completion(false, "No free directory entries in \(parentPath)")
+                }
+                return
+            }
+            
+            // Allocate a block for the new subdirectory
+            guard let blocks = self.allocateBlocks(diskData, count: 1),
+                  let dirBlock = blocks.first else {
+                DispatchQueue.main.async {
+                    completion(false, "Could not allocate block for directory")
+                }
+                return
+            }
+            
+            print("📁 Creating directory '\(sanitizedName)' at block \(dirBlock)")
+            
+            // Create subdirectory header block
+            self.createSubdirectoryHeader(diskData, dirBlock: dirBlock, dirName: sanitizedName, parentBlock: parentDirBlock, parentEntryNum: 0, dataOffset: dataOffset)
+            
+            // Create directory entry in parent
+            self.createDirectoryEntryForSubdir(diskData, dirBlock: entryDirBlock, entryOffset: entryOffset, dirName: sanitizedName, keyBlock: dirBlock, dataOffset: dataOffset)
+            
+            // Increment file count in parent directory
+            self.incrementFileCount(diskData, dirBlock: parentDirBlock)
+            
+            // Write back to disk
+            guard diskData.write(to: diskImagePath, atomically: true) else {
+                DispatchQueue.main.async {
+                    completion(false, "Failed to write disk image")
+                }
+                return
+            }
+            
+            print("✅ Directory '\(sanitizedName)' created successfully")
+            
+            DispatchQueue.main.async {
+                completion(true, "Directory created")
             }
         }
     }
@@ -678,10 +769,11 @@ class ProDOSWriter {
     
     // MARK: - Update File Count
     
-    private func incrementFileCount(_ diskData: NSMutableData) {
+    private func incrementFileCount(_ diskData: NSMutableData, dirBlock: Int? = nil) {
         let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let volHeaderOffset = VOLUME_DIR_BLOCK * BLOCK_SIZE
-        let fileCountOffset = volHeaderOffset + 0x25
+        let targetDirBlock = dirBlock ?? VOLUME_DIR_BLOCK
+        let dirHeaderOffset = targetDirBlock * BLOCK_SIZE
+        let fileCountOffset = dirHeaderOffset + 0x25
         
         let currentCountLo = Int(bytes[fileCountOffset])
         let currentCountHi = Int(bytes[fileCountOffset + 1])
@@ -692,7 +784,7 @@ class ProDOSWriter {
         bytes[fileCountOffset] = UInt8(fileCount & 0xFF)
         bytes[fileCountOffset + 1] = UInt8((fileCount >> 8) & 0xFF)
         
-        print("   📊 Updated file count: \(fileCount)")
+        print("   📊 Updated file count in block \(targetDirBlock): \(fileCount)")
     }
     
     // MARK: - Extract File
@@ -826,11 +918,56 @@ class ProDOSWriter {
     
     // MARK: - Find File Entry
     
-    private func findFileEntry(_ diskData: Data, fileName: String) -> (block: Int, offset: Int)? {
+    private func findFileEntry(_ diskData: Data, fileName: String, dirBlock: Int? = nil) -> (block: Int, offset: Int)? {
         let searchName = fileName.uppercased()
         
-        // Start search from volume directory
-        return searchDirectory(diskData, directoryBlock: VOLUME_DIR_BLOCK, fileName: searchName)
+        if let specificDir = dirBlock {
+            // Search only in specified directory (for path navigation)
+            return searchDirectoryOnly(diskData, directoryBlock: specificDir, fileName: searchName)
+        } else {
+            // Start search from volume directory (recursive)
+            return searchDirectory(diskData, directoryBlock: VOLUME_DIR_BLOCK, fileName: searchName)
+        }
+    }
+    
+    /// Searches ONLY in the specified directory (non-recursive)
+    private func searchDirectoryOnly(_ diskData: Data, directoryBlock: Int, fileName: String) -> (block: Int, offset: Int)? {
+        var currentBlock = directoryBlock
+        var entryIndex = (directoryBlock == VOLUME_DIR_BLOCK) ? 1 : 0  // Skip header in volume dir
+        
+        // Search this directory only
+        while currentBlock != 0 {
+            let blockOffset = currentBlock * BLOCK_SIZE
+            
+            while entryIndex < ENTRIES_PER_BLOCK {
+                let entryOffset = blockOffset + 4 + (entryIndex * ENTRY_LENGTH)
+                let storageType = diskData[entryOffset] >> 4
+                
+                if storageType != 0 {
+                    let nameLen = Int(diskData[entryOffset] & 0x0F)
+                    var entryName = ""
+                    for i in 0..<nameLen {
+                        let char = diskData[entryOffset + 1 + i] & 0x7F
+                        entryName.append(Character(UnicodeScalar(char)))
+                    }
+                    
+                    // Found it!
+                    if entryName == fileName {
+                        return (currentBlock, entryOffset)
+                    }
+                }
+                
+                entryIndex += 1
+            }
+            
+            let nextBlockLo = diskData[blockOffset + 2]
+            let nextBlockHi = diskData[blockOffset + 3]
+            currentBlock = Int(nextBlockLo) | (Int(nextBlockHi) << 8)
+            entryIndex = 0
+        }
+        
+        // Not found in this directory
+        return nil
     }
     
     private func searchDirectory(_ diskData: Data, directoryBlock: Int, fileName: String) -> (block: Int, offset: Int)? {
