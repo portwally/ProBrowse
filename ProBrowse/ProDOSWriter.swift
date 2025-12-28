@@ -152,10 +152,16 @@ class ProDOSWriter {
                 self.writeFileData(diskData, fileData: fileData, blocks: dataBlocks)
                 
                 // 4. For sapling/tree files, create index block(s)
-                var keyBlock = dataBlocks[0]  // Default for seedling
+                var keyBlock = 0  // Will be set based on file type
                 var totalBlocks = dataBlocks.count
                 
-                if dataBlocks.count > 256 {
+                if dataBlocks.isEmpty {
+                    // Zero-length file - no blocks needed
+                    keyBlock = 0
+                    totalBlocks = 0
+                    print("   📄 Zero-length file (no blocks)")
+                    
+                } else if dataBlocks.count > 256 {
                     // Tree file - need master index + multiple index blocks
                     let numIndexBlocks = (dataBlocks.count + 255) / 256  // Round up
                     
@@ -200,6 +206,10 @@ class ProDOSWriter {
                     totalBlocks += 1  // Include index block in count
                     self.createIndexBlock(diskData, indexBlock: keyBlock, dataBlocks: dataBlocks)
                     print("   📇 Created index block at \(keyBlock)")
+                    
+                } else {
+                    // Seedling file (1 block only)
+                    keyBlock = dataBlocks[0]
                 }
                 
                 // 5. Create directory entry
@@ -467,7 +477,9 @@ class ProDOSWriter {
         let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
         
         let storageType: UInt8
-        if blockCount == 1 {
+        if blockCount == 0 {
+            storageType = 0  // Deleted/Empty (0 bytes)
+        } else if blockCount == 1 {
             storageType = 1  // Seedling
         } else if blockCount <= 256 {
             storageType = 2  // Sapling (has index block)
@@ -663,28 +675,31 @@ class ProDOSWriter {
         // +$20: Version (0x00)
         bytes[blockOffset + 0x20] = 0x00
         
-        // +$21: Access (0xE3 = full access)
-        bytes[blockOffset + 0x21] = 0xE3
+        // +$21: Min version (0x00)
+        bytes[blockOffset + 0x21] = 0x00
         
-        // +$22: Entry length (0x27 = 39 bytes)
-        bytes[blockOffset + 0x22] = 0x27
+        // +$22: Access (0xE3 = full access)
+        bytes[blockOffset + 0x22] = 0xE3
         
-        // +$23: Entries per block (0x0D = 13)
-        bytes[blockOffset + 0x23] = 0x0D
+        // +$23: Entry length (0x27 = 39 bytes)
+        bytes[blockOffset + 0x23] = 0x27
         
-        // +$24-$25: File count (0x0000 initially - empty directory)
-        bytes[blockOffset + 0x24] = 0x00
+        // +$24: Entries per block (0x0D = 13)
+        bytes[blockOffset + 0x24] = 0x0D
+        
+        // +$25-$26: File count (0x0000 initially - empty directory)
         bytes[blockOffset + 0x25] = 0x00
+        bytes[blockOffset + 0x26] = 0x00
         
-        // +$26-$27: Parent pointer (block number of parent directory)
-        bytes[blockOffset + 0x26] = UInt8(parentBlock & 0xFF)
-        bytes[blockOffset + 0x27] = UInt8((parentBlock >> 8) & 0xFF)
+        // +$27-$28: Parent pointer (block number of parent directory)
+        bytes[blockOffset + 0x27] = UInt8(parentBlock & 0xFF)
+        bytes[blockOffset + 0x28] = UInt8((parentBlock >> 8) & 0xFF)
         
-        // +$28: Parent entry number (which entry in parent points to this subdir)
-        bytes[blockOffset + 0x28] = UInt8(parentEntryNum)
+        // +$29: Parent entry number (which entry in parent points to this subdir)
+        bytes[blockOffset + 0x29] = UInt8(parentEntryNum)
         
-        // +$29: Parent entry length (0x27)
-        bytes[blockOffset + 0x29] = 0x27
+        // +$2A: Parent entry length (0x27)
+        bytes[blockOffset + 0x2A] = 0x27
         
         print("   📝 Created subdirectory header at block \(dirBlock)")
     }
@@ -772,8 +787,20 @@ class ProDOSWriter {
     private func incrementFileCount(_ diskData: NSMutableData, dirBlock: Int? = nil) {
         let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
         let targetDirBlock = dirBlock ?? VOLUME_DIR_BLOCK
-        let dirHeaderOffset = targetDirBlock * BLOCK_SIZE
-        let fileCountOffset = dirHeaderOffset + 0x25
+        let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+        let blockOffset = dataOffset + (targetDirBlock * BLOCK_SIZE)
+        
+        // Check storage type to determine file count offset
+        let storageType = bytes[blockOffset + 4] >> 4
+        let fileCountOffset: Int
+        
+        if storageType == 0xF {
+            // Volume directory: file count at +$25-$26
+            fileCountOffset = blockOffset + 0x25
+        } else {
+            // Subdirectory: file count at +$25-$26 (same as volume!)
+            fileCountOffset = blockOffset + 0x25
+        }
         
         let currentCountLo = Int(bytes[fileCountOffset])
         let currentCountHi = Int(bytes[fileCountOffset + 1])
@@ -1380,8 +1407,11 @@ class ProDOSWriter {
     
     private func decrementFileCount(_ diskData: NSMutableData) {
         let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let volHeaderOffset = VOLUME_DIR_BLOCK * BLOCK_SIZE + 4
-        let fileCountOffset = volHeaderOffset + 0x25
+        let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+        let blockOffset = dataOffset + (VOLUME_DIR_BLOCK * BLOCK_SIZE)
+        
+        // Volume directory: file count at +$25-$26
+        let fileCountOffset = blockOffset + 0x25
         
         let currentCountLo = Int(bytes[fileCountOffset])
         let currentCountHi = Int(bytes[fileCountOffset + 1])

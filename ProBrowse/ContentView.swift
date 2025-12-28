@@ -32,6 +32,8 @@ struct ContentView: View {
                     onDeleteRight: { rightPaneVM.deleteSelected() },
                     onExportLeft: { leftPaneVM.exportSelectedToFinder() },
                     onExportRight: { rightPaneVM.exportSelectedToFinder() },
+                    onCreateDirLeft: { leftPaneVM.showCreateDirectoryDialog() },
+                    onCreateDirRight: { rightPaneVM.showCreateDirectoryDialog() },
                     leftSelectionCount: leftPaneVM.selectedEntries.count,
                     rightSelectionCount: rightPaneVM.selectedEntries.count
                 )
@@ -95,6 +97,8 @@ struct ToolbarView: View {
     let onDeleteRight: () -> Void
     let onExportLeft: () -> Void
     let onExportRight: () -> Void
+    let onCreateDirLeft: () -> Void
+    let onCreateDirRight: () -> Void
     let leftSelectionCount: Int
     let rightSelectionCount: Int
     
@@ -108,6 +112,13 @@ struct ToolbarView: View {
                     action: onOpenLeft
                 )
                 .help("Open disk image in left pane (⌘O)")
+                
+                ToolbarButton(
+                    icon: "plus.square.on.square",
+                    label: "New Folder",
+                    action: onCreateDirLeft
+                )
+                .help("Create new directory")
                 
                 ToolbarButton(
                     icon: "trash",
@@ -172,6 +183,13 @@ struct ToolbarView: View {
                     destructive: true
                 )
                 .help("Delete selected files (⌫)")
+                
+                ToolbarButton(
+                    icon: "plus.square.on.square",
+                    label: "New Folder",
+                    action: onCreateDirRight
+                )
+                .help("Create new directory")
                 
                 ToolbarButton(
                     icon: "folder.badge.plus",

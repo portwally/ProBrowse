@@ -573,4 +573,71 @@ class DiskPaneViewModel: ObservableObject {
             self.deleteNextFile(entries: entries, index: index + 1, from: diskImagePath)
         }
     }
+    
+    // MARK: - Create Directory
+    
+    func showCreateDirectoryDialog() {
+        guard let diskImagePath = diskImagePath else {
+            print("❌ No disk image loaded")
+            return
+        }
+        
+        let alert = NSAlert()
+        alert.messageText = "Create New Directory"
+        alert.informativeText = "Enter a name for the new directory:"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        textField.placeholderString = "Directory name"
+        alert.accessoryView = textField
+        
+        let response = alert.runModal()
+        
+        if response == .alertFirstButtonReturn {
+            let directoryName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            guard !directoryName.isEmpty else {
+                print("❌ Directory name cannot be empty")
+                return
+            }
+            
+            // Determine parent path
+            let parentPath: String
+            if let currentDir = currentDirectory {
+                // Build path from navigation stack
+                var pathComponents = navigationPath.map { $0.name }
+                pathComponents.append(currentDir.name)
+                parentPath = "/" + pathComponents.joined(separator: "/") + "/"
+            } else {
+                parentPath = "/"
+            }
+            
+            print("📁 Creating directory '\(directoryName)' in '\(parentPath)'")
+            
+            ProDOSWriter.shared.createDirectory(
+                diskImagePath: diskImagePath,
+                directoryName: directoryName,
+                parentPath: parentPath
+            ) { success, message in
+                if success {
+                    print("✅ Directory '\(directoryName)' created successfully")
+                    // Reload disk image to show new directory
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        self.loadDiskImage(from: diskImagePath)
+                    }
+                } else {
+                    print("❌ Failed to create directory: \(message)")
+                    DispatchQueue.main.async {
+                        let errorAlert = NSAlert()
+                        errorAlert.messageText = "Failed to Create Directory"
+                        errorAlert.informativeText = message
+                        errorAlert.alertStyle = .warning
+                        errorAlert.runModal()
+                    }
+                }
+            }
+        }
+    }
 }
