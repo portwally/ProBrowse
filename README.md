@@ -70,3 +70,8 @@ Built with Swift and SwiftUI for modern macOS.
 ---
 
 **Remember: Always backup your disk images before using beta software!**
+
+
+[![Downloads](https://img.shields.io/github/downloads/portwally/ProBrowse/total?style=flat&color=0d6efd)](https://github.com/portwally/ProBrowse/releases)
+[![Stars](https://img.shields.io/github/stars/portwally/ProBrowse?style=flat&color=f1c40f)](https://github.com/portwally/ProBrowse/stargazers)
+[![Forks](https://img.shields.io/github/forks/portwally/ProBrowse?style=flat&color=2ecc71)](https://github.com/portwally/ProBrowse/network/members)
