@@ -34,8 +34,12 @@ struct ContentView: View {
                     onExportRight: { rightPaneVM.exportSelectedToFinder() },
                     onCreateDirLeft: { leftPaneVM.showCreateDirectoryDialog() },
                     onCreateDirRight: { rightPaneVM.showCreateDirectoryDialog() },
+                    onEjectLeft: { leftPaneVM.ejectDisk() },
+                    onEjectRight: { rightPaneVM.ejectDisk() },
                     leftSelectionCount: leftPaneVM.selectedEntries.count,
-                    rightSelectionCount: rightPaneVM.selectedEntries.count
+                    rightSelectionCount: rightPaneVM.selectedEntries.count,
+                    leftHasDisk: leftPaneVM.catalog != nil,
+                    rightHasDisk: rightPaneVM.catalog != nil
                 )
                 
                 Divider()
@@ -47,7 +51,8 @@ struct ContentView: View {
                         viewModel: leftPaneVM,
                         targetViewModel: rightPaneVM,
                         columnWidths: ColumnWidths.leftPane,
-                        paneTitle: "Left Disk"
+                        paneTitle: "Left Disk",
+                        paneId: .left
                     )
                     .frame(minWidth: 400)
                     
@@ -58,7 +63,8 @@ struct ContentView: View {
                         viewModel: rightPaneVM,
                         targetViewModel: leftPaneVM,
                         columnWidths: ColumnWidths.rightPane,
-                        paneTitle: "Right Disk"
+                        paneTitle: "Right Disk",
+                        paneId: .right
                     )
                     .frame(minWidth: 400)
                 }
@@ -84,6 +90,38 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.createDiskImage)) { _ in
             showingCreateImageSheet = true
         }
+        .onAppear {
+            // Setup keyboard shortcuts
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                let focusManager = FocusManager.shared
+                
+                // Determine active and target view models based on focus
+                let (activeVM, targetVM): (DiskPaneViewModel, DiskPaneViewModel) = {
+                    if focusManager.activePaneId == .left {
+                        return (leftPaneVM, rightPaneVM)
+                    } else {
+                        return (rightPaneVM, leftPaneVM)
+                    }
+                }()
+                
+                if event.modifierFlags.contains(.command) {
+                    switch event.charactersIgnoringModifiers {
+                    case "c":
+                        activeVM.copySelected()
+                        return nil
+                    case "x":
+                        activeVM.cutSelected()
+                        return nil
+                    case "v":
+                        activeVM.paste(to: targetVM)
+                        return nil
+                    default:
+                        break
+                    }
+                }
+                return event
+            }
+        }
     }
 }
 
@@ -99,8 +137,12 @@ struct ToolbarView: View {
     let onExportRight: () -> Void
     let onCreateDirLeft: () -> Void
     let onCreateDirRight: () -> Void
+    let onEjectLeft: () -> Void
+    let onEjectRight: () -> Void
     let leftSelectionCount: Int
     let rightSelectionCount: Int
+    let leftHasDisk: Bool
+    let rightHasDisk: Bool
     
     var body: some View {
         HStack(spacing: 0) {
@@ -112,6 +154,14 @@ struct ToolbarView: View {
                     action: onOpenLeft
                 )
                 .help("Open disk image in left pane (⌘O)")
+                
+                ToolbarButton(
+                    icon: "eject",
+                    label: "Eject",
+                    action: onEjectLeft,
+                    disabled: !leftHasDisk
+                )
+                .help("Eject disk image from left pane")
                 
                 ToolbarButton(
                     icon: "plus.square.on.square",
@@ -190,6 +240,14 @@ struct ToolbarView: View {
                     action: onCreateDirRight
                 )
                 .help("Create new directory")
+                
+                ToolbarButton(
+                    icon: "eject",
+                    label: "Eject",
+                    action: onEjectRight,
+                    disabled: !rightHasDisk
+                )
+                .help("Eject disk image from right pane")
                 
                 ToolbarButton(
                     icon: "folder.badge.plus",

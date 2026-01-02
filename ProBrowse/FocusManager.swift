@@ -13,8 +13,18 @@ enum PaneIdentifier {
     case right
 }
 
+enum ClipboardOperation {
+    case copy
+    case cut
+}
+
 class FocusManager: ObservableObject {
     @Published var activePaneId: PaneIdentifier = .left
+    
+    // Shared clipboard
+    var clipboardEntries: [DiskCatalogEntry] = []
+    var clipboardOperation: ClipboardOperation = .copy
+    var clipboardSourcePath: URL?
     
     static let shared = FocusManager()
     
@@ -27,5 +37,22 @@ class FocusManager: ObservableObject {
     
     func isActive(_ paneId: PaneIdentifier) -> Bool {
         return activePaneId == paneId
+    }
+    
+    func copyToClipboard(entries: [DiskCatalogEntry], operation: ClipboardOperation, sourcePath: URL) {
+        clipboardEntries = entries
+        clipboardOperation = operation
+        clipboardSourcePath = sourcePath
+        print("📋 Clipboard: \(entries.count) items (\(operation))")
+    }
+    
+    func clearClipboard() {
+        clipboardEntries.removeAll()
+        clipboardSourcePath = nil
+        print("🗑️ Clipboard cleared")
+    }
+    
+    func hasClipboard() -> Bool {
+        return !clipboardEntries.isEmpty
     }
 }

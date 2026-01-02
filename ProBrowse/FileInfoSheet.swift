@@ -43,8 +43,8 @@ struct FileInfoSheet: View {
                         InfoRow(label: "Type", value: entry.isDirectory ? "Directory" : entry.fileTypeString)
                         InfoRow(label: "Size", value: formatBytes(entry.size))
                         
-                        if !entry.isDirectory {
-                            InfoRow(label: "Blocks Used", value: "\(entry.blocksUsed)")
+                        if !entry.isDirectory, let blocks = entry.blocks {
+                            InfoRow(label: "Blocks Used", value: "\(blocks)")
                         }
                     }
                     
@@ -57,7 +57,6 @@ struct FileInfoSheet: View {
                             
                             InfoRow(label: "File Type", value: String(format: "$%02X", entry.fileType))
                             InfoRow(label: "Aux Type", value: String(format: "$%04X", entry.auxType))
-                            InfoRow(label: "Storage Type", value: storageTypeName(entry.storageType))
                             
                             if let description = fileTypeDescription {
                                 InfoRow(label: "Description", value: description)
@@ -72,13 +71,13 @@ struct FileInfoSheet: View {
                         SectionHeader(title: "Dates")
                         
                         if let created = entry.creationDate {
-                            InfoRow(label: "Created", value: formatDate(created))
+                            InfoRow(label: "Created", value: created)
                         } else {
                             InfoRow(label: "Created", value: "—")
                         }
                         
                         if let modified = entry.modificationDate {
-                            InfoRow(label: "Modified", value: formatDate(modified))
+                            InfoRow(label: "Modified", value: modified)
                         } else {
                             InfoRow(label: "Modified", value: "—")
                         }
@@ -149,19 +148,6 @@ struct FileInfoSheet: View {
         }
     }
     
-    private func storageTypeName(_ type: UInt8) -> String {
-        switch type {
-        case 0: return "Deleted"
-        case 1: return "Seedling (1 block)"
-        case 2: return "Sapling (index + data)"
-        case 3: return "Tree (master + indices + data)"
-        case 0xD: return "Subdirectory"
-        case 0xE: return "Subdirectory Header"
-        case 0xF: return "Volume Directory Header"
-        default: return "Unknown (\(type))"
-        }
-    }
-    
     private func formatBytes(_ bytes: Int) -> String {
         if bytes < 1024 {
             return "\(bytes) bytes"
@@ -170,13 +156,6 @@ struct FileInfoSheet: View {
         } else {
             return String(format: "%.1f MB", Double(bytes) / (1024.0 * 1024.0))
         }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
     }
 }
 
@@ -192,37 +171,21 @@ struct SectionHeader: View {
     }
 }
 
-struct InfoRow: View {
-    let label: String
-    let value: String
-    
-    var body: some View {
-        HStack(alignment: .top) {
-            Text(label + ":")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .frame(width: 140, alignment: .leading)
-            
-            Text(value)
-                .font(.body)
-                .foregroundColor(.primary)
-                .textSelection(.enabled)
-            
-            Spacer()
-        }
-    }
-}
-
 #Preview {
     FileInfoSheet(entry: DiskCatalogEntry(
         name: "EXAMPLE.TXT",
         fileType: 0x04,
+        fileTypeString: "TXT",
         auxType: 0x0000,
         size: 2048,
-        blocksUsed: 4,
-        creationDate: Date(),
-        modificationDate: Date(),
-        storageType: 1,
-        isDirectory: false
+        blocks: 4,
+        loadAddress: nil,
+        length: nil,
+        data: Data(),
+        isImage: false,
+        isDirectory: false,
+        children: nil,
+        modificationDate: "12/29/2025 10:30 AM",
+        creationDate: "12/20/2025 9:15 AM"
     ))
 }

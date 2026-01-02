@@ -15,6 +15,8 @@ class DiskPaneViewModel: ObservableObject {
     @Published var selectedEntries: Set<UUID> = []
     @Published var expandAllTrigger = false
     @Published var showingFilePicker = false
+    @Published var showingFileInfo = false
+    @Published var fileInfoEntry: DiskCatalogEntry?
     
     // Navigation state
     @Published var currentDirectory: DiskCatalogEntry?
@@ -43,21 +45,52 @@ class DiskPaneViewModel: ObservableObject {
         defer { url.stopAccessingSecurityScopedResource() }
         
         do {
-            let data = try Data(contentsOf: url)
+            let originalData = try Data(contentsOf: url)
             self.diskImagePath = url
             
             // Reset navigation
             navigateToRoot()
             
-            // Try to parse as ProDOS
-            if let catalog = try? DiskImageParser.parseProDOS(data: data, diskName: url.lastPathComponent) {
-                self.catalog = catalog
-                self.selectedEntries = []
-                return
+            let isDSK = url.pathExtension.lowercased() == "dsk"
+            let isDO = url.pathExtension.lowercased() == "do"
+            
+            // For .po, .2mg, .hdv, .woz - try directly as ProDOS
+            if !isDSK && !isDO {
+                if let catalog = try? DiskImageParser.parseProDOS(data: originalData, diskName: url.lastPathComponent) {
+                    self.catalog = catalog
+                    self.selectedEntries = []
+                    return
+                }
             }
             
-            // Try to parse as DOS 3.3
-            if let catalog = try? DiskImageParser.parseDOS33(data: data, diskName: url.lastPathComponent) {
+            // For .dsk/.do files - try both filesystems
+            if isDSK || isDO {
+                print("📀 Loading .dsk file: \(url.lastPathComponent)")
+                
+                // .dsk can contain either ProDOS or DOS 3.3 filesystem
+                // Just try both parsers!
+                
+                // Try ProDOS first
+                if let catalog = try? DiskImageParser.parseProDOS(data: originalData, diskName: url.lastPathComponent) {
+                    print("✅ Parsed as ProDOS")
+                    self.catalog = catalog
+                    self.selectedEntries = []
+                    return
+                }
+                
+                // Try DOS 3.3
+                if let catalog = try? DiskImageParser.parseDOS33(data: originalData, diskName: url.lastPathComponent) {
+                    print("✅ Parsed as DOS 3.3")
+                    self.catalog = catalog
+                    self.selectedEntries = []
+                    return
+                }
+                
+                print("❌ Could not parse .dsk file")
+            }
+            
+            // Fallback: Try as DOS 3.3
+            if let catalog = try? DiskImageParser.parseDOS33(data: originalData, diskName: url.lastPathComponent) {
                 self.catalog = catalog
                 self.selectedEntries = []
                 return
@@ -68,6 +101,105 @@ class DiskPaneViewModel: ObservableObject {
         } catch {
             print("Error loading disk image: \(error)")
         }
+    }
+    
+    // MARK: - Find Volume Header in .dsk
+    
+    private struct VolumeHeaderLocation {
+        let offset: Int
+        let track: Int
+        let sector: Int
+    }
+    
+    private func findVolumeHeaderInDSK(_ data: Data) -> VolumeHeaderLocation? {
+        // Scan entire disk for ProDOS Volume Directory Header signature
+        // Looking for: Storage Type 0xF, valid name length, entry_length=0x27, entries_per_block=0x0D
+        
+        let sectorSize = 256
+        
+        // Check every sector as potential start of a 512-byte block
+        for offset in stride(from: 0, to: data.count - 512, by: sectorSize) {
+            let blockData = data[offset..<(offset + 512)]
+            
+            guard offset + 4 < blockData.endIndex else { continue }
+            
+            let storageAndName = blockData[blockData.startIndex + 4]
+            let storageType = (storageAndName & 0xF0) >> 4
+            let nameLength = storageAndName & 0x0F
+            
+            // Check for Volume Directory Header signature
+            if storageType == 0x0F && nameLength >= 1 && nameLength <= 15 {
+                // Verify entry structure
+                guard offset + 0x24 < blockData.endIndex else { continue }
+                
+                let entryLength = blockData[blockData.startIndex + 0x23]
+                let entriesPerBlock = blockData[blockData.startIndex + 0x24]
+                
+                if entryLength == 0x27 && entriesPerBlock == 0x0D {
+                    let track = offset / 4096
+                    let sector = (offset % 4096) / sectorSize
+                    
+                    return VolumeHeaderLocation(offset: offset, track: track, sector: sector)
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    // MARK: - DOS to ProDOS Sector Order Conversion
+    
+    private func convertDOStoProDOSOrder(_ data: Data) -> Data? {
+        let sectorSize = 256
+        let sectorsPerTrack = 16
+        let tracks = 35
+        let expectedSize = tracks * sectorsPerTrack * sectorSize
+        
+        guard data.count == expectedSize else {
+            print("   ⚠️ File size mismatch: \(data.count) != \(expectedSize)")
+            return nil
+        }
+        
+        // DOS to ProDOS sector mapping
+        // Each ProDOS block consists of 2 DOS sectors in this order
+        let dosToProDOSMap: [Int] = [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15]
+        
+        var converted = Data(count: expectedSize)
+        var destOffset = 0
+        
+        // Process each track
+        for track in 0..<tracks {
+            let trackOffset = track * sectorsPerTrack * sectorSize
+            
+            // Process each block in track (8 blocks per track)
+            for blockInTrack in 0..<8 {
+                // Get the two sector indices for this block
+                let lowerSectorIdx = dosToProDOSMap[blockInTrack * 2]
+                let upperSectorIdx = dosToProDOSMap[blockInTrack * 2 + 1]
+                
+                // Read from DOS order
+                let lowerOffset = trackOffset + (lowerSectorIdx * sectorSize)
+                let upperOffset = trackOffset + (upperSectorIdx * sectorSize)
+                
+                // Write to ProDOS order (linear)
+                converted.replaceSubrange(destOffset..<(destOffset + sectorSize),
+                                        with: data[lowerOffset..<(lowerOffset + sectorSize)])
+                destOffset += sectorSize
+                
+                converted.replaceSubrange(destOffset..<(destOffset + sectorSize),
+                                        with: data[upperOffset..<(upperOffset + sectorSize)])
+                destOffset += sectorSize
+            }
+        }
+        
+        print("   ✅ Conversion complete: \(converted.count) bytes")
+        
+        // Verify Block 2
+        let block2Offset = 2 * 512
+        let storageType = (converted[block2Offset + 4] & 0xF0) >> 4
+        print("   Verification: Block 2 StorageType = 0x\(String(storageType, radix: 16))")
+        
+        return converted
     }
     
     // MARK: - Selection
@@ -438,7 +570,7 @@ class DiskPaneViewModel: ObservableObject {
     
     // MARK: - Copy Directory Contents (With Structure)
     
-    private func copyDirectoryContents(_ entries: [DiskCatalogEntry], from sourceImagePath: URL, to targetImagePath: URL, completion: @escaping () -> Void) {
+    func copyDirectoryContents(_ entries: [DiskCatalogEntry], from sourceImagePath: URL, to targetImagePath: URL, completion: @escaping () -> Void) {
         // Copy directory structure recursively
         copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: "/", index: 0, completion: completion)
     }
@@ -637,6 +769,182 @@ class DiskPaneViewModel: ObservableObject {
                         errorAlert.runModal()
                     }
                 }
+            }
+        }
+    }
+    
+    // MARK: - Eject Disk
+    
+    func ejectDisk() {
+        print("💿 Ejecting disk image")
+        
+        // Clear all state
+        catalog = nil
+        diskImagePath = nil
+        selectedEntries.removeAll()
+        currentDirectory = nil
+        navigationPath.removeAll()
+        lastSelectedEntry = nil
+        
+        print("✅ Disk ejected")
+    }
+    
+    // MARK: - Rename Entry
+    
+    func renameEntry(_ entry: DiskCatalogEntry) {
+        guard let diskImagePath = diskImagePath else {
+            print("❌ No disk image loaded")
+            return
+        }
+        
+        let alert = NSAlert()
+        alert.messageText = "Rename \(entry.isDirectory ? "Directory" : "File")"
+        alert.informativeText = "Enter a new name:"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        textField.placeholderString = "New name"
+        textField.stringValue = entry.name
+        alert.accessoryView = textField
+        
+        let response = alert.runModal()
+        
+        if response == .alertFirstButtonReturn {
+            let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            guard !newName.isEmpty else {
+                print("❌ Name cannot be empty")
+                return
+            }
+            
+            guard newName != entry.name else {
+                print("❌ Name unchanged")
+                return
+            }
+            
+            print("✏️ Renaming '\(entry.name)' to '\(newName)'")
+            
+            ProDOSWriter.shared.renameFile(
+                diskImagePath: diskImagePath,
+                oldName: entry.name,
+                newName: newName
+            ) { success, message in
+                if success {
+                    print("✅ Renamed to '\(newName)'")
+                    // Reload disk image to show new name
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        self.loadDiskImage(from: diskImagePath)
+                    }
+                } else {
+                    print("❌ Failed to rename: \(message)")
+                    DispatchQueue.main.async {
+                        let errorAlert = NSAlert()
+                        errorAlert.messageText = "Failed to Rename"
+                        errorAlert.informativeText = message
+                        errorAlert.alertStyle = .warning
+                        errorAlert.runModal()
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Show File Info
+    
+    func showFileInfo(_ entry: DiskCatalogEntry) {
+        fileInfoEntry = entry
+        showingFileInfo = true
+    }
+    
+    // MARK: - Copy/Cut/Paste
+    
+    func copySelected() {
+        let entries = getSelectedEntries()
+        guard !entries.isEmpty else {
+            print("❌ Nothing selected to copy")
+            return
+        }
+        
+        guard let sourcePath = diskImagePath else {
+            print("❌ No disk loaded")
+            return
+        }
+        
+        FocusManager.shared.copyToClipboard(entries: entries, operation: .copy, sourcePath: sourcePath)
+    }
+    
+    func cutSelected() {
+        let entries = getSelectedEntries()
+        guard !entries.isEmpty else {
+            print("❌ Nothing selected to cut")
+            return
+        }
+        
+        guard let sourcePath = diskImagePath else {
+            print("❌ No disk loaded")
+            return
+        }
+        
+        FocusManager.shared.copyToClipboard(entries: entries, operation: .cut, sourcePath: sourcePath)
+    }
+    
+    func paste(to targetViewModel: DiskPaneViewModel) {
+        let clipboard = FocusManager.shared
+        
+        guard clipboard.hasClipboard() else {
+            print("❌ Clipboard is empty")
+            return
+        }
+        
+        guard let sourceDiskPath = clipboard.clipboardSourcePath else {
+            print("❌ No source disk in clipboard")
+            return
+        }
+        
+        guard let targetDiskPath = targetViewModel.diskImagePath else {
+            print("❌ No target disk loaded")
+            return
+        }
+        
+        print("📋 Pasting \(clipboard.clipboardEntries.count) items...")
+        print("   Operation: \(clipboard.clipboardOperation)")
+        
+        // Copy entries using existing mechanism
+        copyDirectoryContents(clipboard.clipboardEntries, from: sourceDiskPath, to: targetDiskPath) {
+            print("✅ All files pasted")
+            
+            // If it was a CUT operation, delete from source
+            if clipboard.clipboardOperation == .cut {
+                print("✂️ Cut operation - deleting from source")
+                
+                // Delete each entry from source
+                for entry in clipboard.clipboardEntries {
+                    ProDOSWriter.shared.deleteFile(
+                        diskImagePath: sourceDiskPath,
+                        fileName: entry.name
+                    ) { deleteSuccess, message in
+                        if deleteSuccess {
+                            print("✅ Deleted \(entry.name) from source")
+                        } else {
+                            print("❌ Failed to delete \(entry.name): \(message)")
+                        }
+                    }
+                }
+                
+                // Reload source after deletion
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.loadDiskImage(from: sourceDiskPath)
+                }
+            }
+            
+            // Clear clipboard after successful paste
+            clipboard.clearClipboard()
+            
+            // Reload target to show new files
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                targetViewModel.loadDiskImage(from: targetDiskPath)
             }
         }
     }

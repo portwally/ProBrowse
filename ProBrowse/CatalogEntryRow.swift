@@ -10,19 +10,33 @@ import SwiftUI
 struct CatalogEntryRow: View {
     let entry: DiskCatalogEntry
     let isSelected: (DiskCatalogEntry) -> Bool
-    let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void  // entry, command, shift
-    let onDoubleClick: ((DiskCatalogEntry) -> Void)?  // NEW: double-click navigation
+    let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void
+    let onDoubleClick: ((DiskCatalogEntry) -> Void)?
+    let onRename: ((DiskCatalogEntry) -> Void)?
+    let onGetInfo: ((DiskCatalogEntry) -> Void)?
+    let onCopy: ((DiskCatalogEntry) -> Void)?
+    let onCut: ((DiskCatalogEntry) -> Void)?
+    let onPaste: (() -> Void)?
+    let onExport: ((DiskCatalogEntry) -> Void)?
+    let onDelete: ((DiskCatalogEntry) -> Void)?
     let level: Int
     let expandAllTrigger: Bool
     @ObservedObject var columnWidths: ColumnWidths
     
     @State private var isExpanded: Bool
     
-    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, onDoubleClick: ((DiskCatalogEntry) -> Void)? = nil, level: Int, expandAllTrigger: Bool, columnWidths: ColumnWidths) {
+    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, onDoubleClick: ((DiskCatalogEntry) -> Void)? = nil, onRename: ((DiskCatalogEntry) -> Void)? = nil, onGetInfo: ((DiskCatalogEntry) -> Void)? = nil, onCopy: ((DiskCatalogEntry) -> Void)? = nil, onCut: ((DiskCatalogEntry) -> Void)? = nil, onPaste: (() -> Void)? = nil, onExport: ((DiskCatalogEntry) -> Void)? = nil, onDelete: ((DiskCatalogEntry) -> Void)? = nil, level: Int, expandAllTrigger: Bool, columnWidths: ColumnWidths) {
         self.entry = entry
         self.isSelected = isSelected
         self.onToggle = onToggle
         self.onDoubleClick = onDoubleClick
+        self.onRename = onRename
+        self.onGetInfo = onGetInfo
+        self.onCopy = onCopy
+        self.onCut = onCut
+        self.onPaste = onPaste
+        self.onExport = onExport
+        self.onDelete = onDelete
         self.level = level
         self.expandAllTrigger = expandAllTrigger
         self.columnWidths = columnWidths
@@ -39,6 +53,13 @@ struct CatalogEntryRow: View {
                 level: level,
                 onToggle: onToggle,
                 onDoubleClick: onDoubleClick,
+                onRename: onRename,
+                onGetInfo: onGetInfo,
+                onCopy: onCopy,
+                onCut: onCut,
+                onPaste: onPaste,
+                onExport: onExport,
+                onDelete: onDelete,
                 columnWidths: columnWidths
             )
             
@@ -50,6 +71,13 @@ struct CatalogEntryRow: View {
                         isSelected: isSelected,
                         onToggle: onToggle,
                         onDoubleClick: onDoubleClick,
+                        onRename: onRename,
+                        onGetInfo: onGetInfo,
+                        onCopy: onCopy,
+                        onCut: onCut,
+                        onPaste: onPaste,
+                        onExport: onExport,
+                        onDelete: onDelete,
                         level: level + 1,
                         expandAllTrigger: expandAllTrigger,
                         columnWidths: columnWidths
@@ -74,6 +102,13 @@ struct CatalogEntryRowContent: View {
     let level: Int
     let onToggle: (DiskCatalogEntry, Bool, Bool) -> Void
     let onDoubleClick: ((DiskCatalogEntry) -> Void)?
+    let onRename: ((DiskCatalogEntry) -> Void)?
+    let onGetInfo: ((DiskCatalogEntry) -> Void)?
+    let onCopy: ((DiskCatalogEntry) -> Void)?
+    let onCut: ((DiskCatalogEntry) -> Void)?
+    let onPaste: (() -> Void)?
+    let onExport: ((DiskCatalogEntry) -> Void)?
+    let onDelete: ((DiskCatalogEntry) -> Void)?
     @ObservedObject var columnWidths: ColumnWidths
     
     var body: some View {
@@ -180,6 +215,61 @@ struct CatalogEntryRowContent: View {
         }
         .frame(height: 22)
         .contentShape(Rectangle())
+        .contextMenu {
+            // Copy/Cut/Paste
+            Button("Copy") {
+                if let onCopy = onCopy {
+                    onCopy(entry)
+                }
+            }
+            .keyboardShortcut("c", modifiers: .command)
+            
+            Button("Cut") {
+                if let onCut = onCut {
+                    onCut(entry)
+                }
+            }
+            .keyboardShortcut("x", modifiers: .command)
+            
+            Button("Paste") {
+                if let onPaste = onPaste {
+                    onPaste()
+                }
+            }
+            .keyboardShortcut("v", modifiers: .command)
+            
+            Divider()
+            
+            // Export & Delete
+            Button("Export to Finder...") {
+                if let onExport = onExport {
+                    onExport(entry)
+                }
+            }
+            
+            Button("Delete") {
+                if let onDelete = onDelete {
+                    onDelete(entry)
+                }
+            }
+            .keyboardShortcut(.delete, modifiers: [])
+            
+            Divider()
+            
+            // Rename & Info
+            Button("Rename") {
+                if let onRename = onRename {
+                    onRename(entry)
+                }
+            }
+            
+            Button("Get Info") {
+                if let onGetInfo = onGetInfo {
+                    onGetInfo(entry)
+                }
+            }
+            .keyboardShortcut("i", modifiers: .command)
+        }
         .onTapGesture(count: 2) {
             // Double-click: navigate into directory
             if entry.isDirectory, let onDoubleClick = onDoubleClick {

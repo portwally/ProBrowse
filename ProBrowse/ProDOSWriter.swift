@@ -1447,4 +1447,119 @@ class ProDOSWriter {
         
         print("   ✅ Marked blocks 0-\(systemBlocks - 1) as used")
     }
+    
+    // MARK: - Sanitize Filename
+    
+    private func sanitizeFilename(_ name: String) -> String {
+        // ProDOS filename rules:
+        // - Max 15 characters
+        // - Alphanumeric + dot only
+        // - Must start with letter
+        // - Uppercase
+        
+        var sanitized = name.uppercased()
+        
+        // Remove invalid characters (keep only A-Z, 0-9, dot, period)
+        sanitized = sanitized.filter { char in
+            char.isLetter || char.isNumber || char == "."
+        }
+        
+        // If starts with number, prepend "X"
+        if let first = sanitized.first, first.isNumber {
+            sanitized = "X" + sanitized
+        }
+        
+        // Truncate to 15 characters
+        if sanitized.count > 15 {
+            sanitized = String(sanitized.prefix(15))
+        }
+        
+        // If empty after sanitization, use default
+        if sanitized.isEmpty {
+            sanitized = "NEWFILE"
+        }
+        
+        return sanitized
+    }
+    
+    // MARK: - Rename File
+    
+    func renameFile(diskImagePath: URL, oldName: String, newName: String, completion: @escaping (Bool, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read disk image")
+                    }
+                    return
+                }
+                
+                print("✏️ Renaming file in ProDOS image:")
+                print("   Old name: \(oldName)")
+                print("   New name: \(newName)")
+                
+                // Find the file entry
+                guard let (_, entryOffset) = self.findFileEntry(Data(referencing: diskData), fileName: oldName) else {
+                    DispatchQueue.main.async {
+                        completion(false, "File '\(oldName)' not found")
+                    }
+                    return
+                }
+                
+                // Sanitize new name (ProDOS format)
+                let sanitizedName = self.sanitizeFilename(newName)
+                print("   Sanitized name: \(sanitizedName)")
+                
+                // Check if new name already exists
+                if let _ = self.findFileEntry(Data(referencing: diskData), fileName: sanitizedName) {
+                    DispatchQueue.main.async {
+                        completion(false, "A file named '\(sanitizedName)' already exists")
+                    }
+                    return
+                }
+                
+                // Update the filename in the directory entry
+                let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+                let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+                let actualOffset = dataOffset + entryOffset
+                
+                // Get storage type from first byte
+                let storageTypeAndLength = bytes[actualOffset]
+                let storageType = storageTypeAndLength >> 4
+                
+                // ProDOS filename: max 15 characters, uppercase
+                let nameData = sanitizedName.uppercased().data(using: .ascii) ?? Data()
+                let nameLen = min(nameData.count, 15)
+                
+                // Update storage type + name length byte
+                bytes[actualOffset] = (storageType << 4) | UInt8(nameLen)
+                
+                // Clear old name (15 bytes)
+                for i in 0..<15 {
+                    bytes[actualOffset + 1 + i] = 0x00
+                }
+                
+                // Write new name
+                for i in 0..<nameLen {
+                    bytes[actualOffset + 1 + i] = nameData[i]
+                }
+                
+                print("   📝 Updated filename bytes at offset \(actualOffset)")
+                
+                // Write back to disk
+                try diskData.write(to: diskImagePath, options: .atomic)
+                
+                DispatchQueue.main.async {
+                    completion(true, "File renamed successfully")
+                }
+                
+                print("   ✅ File renamed successfully!")
+                
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "Error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
 }

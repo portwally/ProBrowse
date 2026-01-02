@@ -15,10 +15,12 @@ struct DiskBrowserPane: View {
     @ObservedObject var targetViewModel: DiskPaneViewModel
     @ObservedObject var columnWidths: ColumnWidths
     let paneTitle: String
+    let paneId: PaneIdentifier
     var hideHeader: Bool = false
     
     @State private var draggedEntries: [DiskCatalogEntry] = []
     @State private var isTargeted = false
+    @StateObject private var focusManager = FocusManager.shared
     
     var body: some View {
         VStack(spacing: 0) {
@@ -34,9 +36,20 @@ struct DiskBrowserPane: View {
                 emptyStateView
             }
         }
+        .onTapGesture {
+            // Set this pane as active when clicked
+            focusManager.setActivePane(paneId)
+        }
+        .onChange(of: focusManager.activePaneId) { oldValue, newValue in
+            // Clear selection when this pane loses focus
+            if newValue != paneId && !viewModel.selectedEntries.isEmpty {
+                print("🔄 Clearing selection in inactive \(paneId) pane")
+                viewModel.selectedEntries.removeAll()
+            }
+        }
         .fileImporter(
             isPresented: $viewModel.showingFilePicker,
-            allowedContentTypes: [.po, .twoimg, .hdv, .woz],
+            allowedContentTypes: [.po, .twoimg, .hdv, .woz, .dsk, .do],
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -46,6 +59,11 @@ struct DiskBrowserPane: View {
                 }
             case .failure(let error):
                 print("Error selecting file: \(error)")
+            }
+        }
+        .sheet(isPresented: $viewModel.showingFileInfo) {
+            if let entry = viewModel.fileInfoEntry {
+                FileInfoSheet(entry: entry)
             }
         }
     }
@@ -178,10 +196,88 @@ struct DiskBrowserPane: View {
             entry: entry,
             isSelected: { viewModel.isSelected($0) },
             onToggle: { entry, cmd, shift in
+                // Set this pane as active when selecting entries
+                focusManager.setActivePane(paneId)
                 viewModel.toggleSelection(entry, commandPressed: cmd, shiftPressed: shift)
             },
             onDoubleClick: { entry in
                 viewModel.navigateInto(entry)
+            },
+            onRename: { entry in
+                viewModel.renameEntry(entry)
+            },
+            onGetInfo: { entry in
+                viewModel.showFileInfo(entry)
+            },
+            onCopy: { entry in
+                focusManager.setActivePane(paneId)
+                if !viewModel.isSelected(entry) {
+                    viewModel.selectedEntries.removeAll()
+                    viewModel.selectedEntries.insert(entry.id)
+                }
+                viewModel.copySelected()
+            },
+            onCut: { entry in
+                focusManager.setActivePane(paneId)
+                if !viewModel.isSelected(entry) {
+                    viewModel.selectedEntries.removeAll()
+                    viewModel.selectedEntries.insert(entry.id)
+                }
+                viewModel.cutSelected()
+            },
+            onPaste: {
+                focusManager.setActivePane(paneId)
+                // Paste into THIS pane (not target!)
+                let clipboard = FocusManager.shared
+                guard clipboard.hasClipboard() else {
+                    print("❌ Clipboard is empty")
+                    return
+                }
+                guard let sourcePath = clipboard.clipboardSourcePath else {
+                    print("❌ No source in clipboard")
+                    return
+                }
+                guard let targetPath = viewModel.diskImagePath else {
+                    print("❌ No disk loaded in this pane")
+                    return
+                }
+                
+                print("📋 Pasting into CURRENT pane (\(paneId))")
+                
+                viewModel.copyDirectoryContents(clipboard.clipboardEntries, from: sourcePath, to: targetPath) {
+                    print("✅ Pasted into \(paneId) pane")
+                    
+                    // If CUT, delete from source
+                    if clipboard.clipboardOperation == .cut {
+                        print("✂️ Cut operation - deleting from source")
+                        for entry in clipboard.clipboardEntries {
+                            ProDOSWriter.shared.deleteFile(diskImagePath: sourcePath, fileName: entry.name) { _, _ in }
+                        }
+                    }
+                    
+                    clipboard.clearClipboard()
+                    
+                    // Reload THIS pane
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        viewModel.loadDiskImage(from: targetPath)
+                    }
+                }
+            },
+            onExport: { entry in
+                focusManager.setActivePane(paneId)
+                if !viewModel.isSelected(entry) {
+                    viewModel.selectedEntries.removeAll()
+                    viewModel.selectedEntries.insert(entry.id)
+                }
+                viewModel.exportSelectedToFinder()
+            },
+            onDelete: { entry in
+                focusManager.setActivePane(paneId)
+                if !viewModel.isSelected(entry) {
+                    viewModel.selectedEntries.removeAll()
+                    viewModel.selectedEntries.insert(entry.id)
+                }
+                viewModel.deleteSelected()
             },
             level: 0,
             expandAllTrigger: viewModel.expandAllTrigger,
