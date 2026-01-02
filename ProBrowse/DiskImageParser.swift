@@ -105,28 +105,32 @@ class DiskImageParser {
         let prevBlock = UInt16(block[0]) | (UInt16(block[1]) << 8)
         guard prevBlock == 0 else { return false }
         
-        // Check 4: Entry Length should be 39 (0x27)
+        // Check 4: Entry Length should be reasonable (typically 39, but allow 32-64)
         let entryLength = block[0x23]
-        guard entryLength == 0x27 else { return false }
+        guard entryLength >= 32 && entryLength <= 64 else { return false }
         
-        // Check 5: Entries Per Block should be 13 (0x0D)
+        // Check 5: Entries Per Block should be reasonable (typically 13, but allow 8-16)
         let entriesPerBlock = block[0x24]
-        guard entriesPerBlock == 0x0D else { return false }
+        guard entriesPerBlock >= 8 && entriesPerBlock <= 16 else { return false }
         
-        // Check 6: Volume Name must be printable ASCII (uppercase letters, digits, periods)
-        var volumeName = ""
+        // Check 6: Volume Name must contain mostly printable ASCII
+        // Allow uppercase, lowercase, digits, period, space
+        var validCharCount = 0
         for i in 0..<nameLength {
             let char = block[5 + i] & 0x7F
-            // ProDOS allows: A-Z, 0-9, and period
+            // More permissive: allow A-Z, a-z, 0-9, period, space
             let isValid = (char >= 0x41 && char <= 0x5A) ||  // A-Z
+                         (char >= 0x61 && char <= 0x7A) ||  // a-z
                          (char >= 0x30 && char <= 0x39) ||  // 0-9
-                         (char == 0x2E)                     // .
-            guard isValid else { return false }
-            volumeName.append(Character(UnicodeScalar(char)))
+                         (char == 0x2E) ||                   // .
+                         (char == 0x20)                      // space
+            if isValid {
+                validCharCount += 1
+            }
         }
         
-        // Check 7: Volume name should not be empty after validation
-        guard !volumeName.isEmpty else { return false }
+        // At least 50% of characters should be valid (more permissive)
+        guard validCharCount >= nameLength / 2 else { return false }
         
         return true
     }
@@ -208,7 +212,37 @@ class DiskImageParser {
     
     static func parseProDOS(data: Data, diskName: String) throws -> DiskCatalog? {
         let blockSize = 512
-        guard data.count >= blockSize * 3 else { return nil }
+        
+        // Check for 2MG/2IMG header and skip it
+        var dataOffset = 0
+        var actualData = data
+        
+        if data.count >= 64 {
+            // Check for 2IMG magic header
+            let magic = data.subdata(in: 0..<4)
+            if magic == Data([0x32, 0x49, 0x4D, 0x47]) { // "2IMG"
+                // Read header size (bytes 8-9, little-endian)
+                let headerSize = Int(data[8]) | (Int(data[9]) << 8)
+                
+                // Read data offset (bytes 24-27, little-endian)
+                let dataOffsetInHeader = Int(data[24]) | (Int(data[25]) << 8) |
+                                        (Int(data[26]) << 16) | (Int(data[27]) << 24)
+                
+                if dataOffsetInHeader > 0 && dataOffsetInHeader < data.count {
+                    dataOffset = dataOffsetInHeader
+                } else {
+                    // Fallback to header size
+                    dataOffset = headerSize
+                }
+                
+                print("🔍 Detected 2MG/2IMG container (header size: \(headerSize), data offset: \(dataOffset))")
+                
+                // Skip the header
+                actualData = data.subdata(in: dataOffset..<data.count)
+            }
+        }
+        
+        guard actualData.count >= blockSize * 3 else { return nil }
         
         // --- Step 1: Detect Format Order ---
         var isDOSOrder = false
@@ -216,7 +250,7 @@ class DiskImageParser {
         var rootBlockData: Data? = nil
         
         // Check standard ProDOS Order (Block 2 at linear offset 1024)
-        if let block2PO = getBlockData(from: data, blockIndex: 2, isDOSOrder: false) {
+        if let block2PO = getBlockData(from: actualData, blockIndex: 2, isDOSOrder: false) {
             if isValidProDOSVolumeHeader(block2PO) {
                 isDOSOrder = false
                 detected = true
@@ -226,7 +260,7 @@ class DiskImageParser {
         }
         
         // Check DOS Order (Block 2 in Track 0 with Track 0 mapping)
-        if !detected, let block2DSK = getBlock2Track0(from: data) {
+        if !detected, let block2DSK = getBlock2Track0(from: actualData) {
             if isValidProDOSVolumeHeader(block2DSK) {
                 isDOSOrder = true
                 detected = true
@@ -260,12 +294,12 @@ class DiskImageParser {
         }
         
         // --- Step 3: Read Directory Tree ---
-        let entries = readProDOSDirectory(data: data, startBlock: 2, isDOSOrder: isDOSOrder)
+        let entries = readProDOSDirectory(data: actualData, startBlock: 2, isDOSOrder: isDOSOrder)
         
         return DiskCatalog(
             diskName: volumeName.isEmpty ? diskName : volumeName,
             diskFormat: isDOSOrder ? "ProDOS (DSK)" : "ProDOS (PO)",
-            diskSize: data.count,
+            diskSize: actualData.count,
             entries: entries
         )
     }
@@ -309,11 +343,9 @@ class DiskImageParser {
             if visitedBlocks.contains(currentBlock) { break }
             visitedBlocks.insert(currentBlock)
             
-            print("📖 Reading directory block \(currentBlock)...")
             
             // USE helper to get data (de-interleaving if necessary)
             guard let blockData = getBlockData(from: data, blockIndex: currentBlock, isDOSOrder: isDOSOrder) else {
-                print("❌ Failed to read block \(currentBlock)")
                 break
             }
             
@@ -394,14 +426,13 @@ class DiskImageParser {
                     let fileData = extractProDOSFile(data: data, keyBlock: keyPointer, blocksUsed: blocksUsed, eof: eof, storageType: Int(storageType), isDOSOrder: isDOSOrder) ?? Data()
                     let isGraphicsFile = [0x08, 0xC0, 0xC1].contains(fileType)
                     
-                    // Simple FileType mapping
-                    let typeStr = String(format: "$%02X", fileType) // Fallback
-                    // You can use your ProDOSFileTypeInfo helper here if available in your project
+                    // Get proper file type info from ProDOSFileTypes
+                    let fileTypeInfo = ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: UInt16(auxType))
                     
                     entries.append(DiskCatalogEntry(
                         name: fileName,
                         fileType: fileType,
-                        fileTypeString: typeStr,
+                        fileTypeString: fileTypeInfo.shortName,
                         auxType: UInt16(auxType),
                         size: eof,
                         blocks: blocksUsed,
@@ -418,16 +449,12 @@ class DiskImageParser {
                 }
             }
             
-            print("   Entries in block \(currentBlock): \(entriesInThisBlock)")
             
             // Get pointer to next block in directory chain
             let nextBlock = Int(blockData[2]) | (Int(blockData[3]) << 8)
-            print("   Next block pointer: \(nextBlock)")
-            print("   Found \(entries.count) total entries so far")
             currentBlock = nextBlock
         }
         
-        print("✅ Directory reading complete: \(entries.count) entries")
         return entries
     }
     
@@ -550,10 +577,13 @@ class DiskImageParser {
                     
                     let isGraphicsFile = (fileType == 0x04 || fileType == 0x42) && fileData.count > 8000
                     
+                    // Get proper file type info from ProDOSFileTypes
+                    let fileTypeInfo = ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: 0)
+                    
                     entries.append(DiskCatalogEntry(
                         name: fileName + (locked ? " 🔒" : ""),
                         fileType: fileType,
-                        fileTypeString: String(format: "$%02X", fileType),
+                        fileTypeString: fileTypeInfo.shortName,
                         auxType: 0,
                         size: fileData.count,
                         blocks: nil,
