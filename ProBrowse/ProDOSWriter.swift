@@ -3,6 +3,7 @@
 //  ProBrowse
 //
 //  Direct ProDOS disk image manipulation without external tools
+//  Updated with sector interleaving support for .dsk/.do floppy images
 //
 
 import Foundation
@@ -15,7 +16,110 @@ class ProDOSWriter {
     private let ENTRIES_PER_BLOCK = 13  // 0x0D
     private let ENTRY_LENGTH = 39       // 0x27
     
+    // MARK: - DOS to ProDOS Sector Interleaving Maps
+    
+    // Track 0 (Directory): Uses countdown mapping for the Volume Directory
+    private let dosToProDOSMapTrack0: [Int] = [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+    
+    // Track 1+ (Data): Uses standard DOS 3.3 logical order for file data blocks
+    private let dosToProDOSMapData: [Int] = [0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15]
+    
     private init() {}
+    
+    // MARK: - Floppy Image Detection
+    
+    /// Detects if disk image is a floppy that needs sector interleaving
+    private func isDOSOrderFloppy(_ diskData: Data, diskImagePath: URL) -> Bool {
+        let ext = diskImagePath.pathExtension.lowercased()
+        let isFloppySize = diskData.count == 143360 || diskData.count == 819200
+        let isFloppyExtension = (ext == "dsk" || ext == "do")
+        
+        // Only .dsk and .do files need interleaving (and only if floppy size)
+        return isFloppySize && isFloppyExtension
+    }
+    
+    // MARK: - Block Read/Write with Interleaving Support
+    
+    /// Reads a 512-byte block from disk data, handling sector interleaving for floppy images
+    private func readBlock(_ diskData: Data, blockIndex: Int, dataOffset: Int, isDOSOrder: Bool) -> Data? {
+        if !isDOSOrder {
+            // Standard ProDOS Order (.po, .hdv, .2mg): Linear access
+            let offset = dataOffset + (blockIndex * BLOCK_SIZE)
+            guard offset + BLOCK_SIZE <= diskData.count else { return nil }
+            return diskData.subdata(in: offset..<(offset + BLOCK_SIZE))
+        } else {
+            // DOS Order (.dsk, .do): Interleaved sectors
+            let blocksPerTrack = 8
+            let track = blockIndex / blocksPerTrack
+            let blockInTrack = blockIndex % blocksPerTrack
+            
+            let sectorSize = 256
+            let trackOffset = dataOffset + (track * 16 * sectorSize)
+            
+            guard trackOffset < diskData.count else { return nil }
+            
+            // Select mapping based on track
+            let mapping = (track == 0) ? dosToProDOSMapTrack0 : dosToProDOSMapData
+            
+            // Get the two sector indices for this block
+            let lowerSectorIdx = mapping[blockInTrack * 2]
+            let upperSectorIdx = mapping[blockInTrack * 2 + 1]
+            
+            let lowerOffset = trackOffset + (lowerSectorIdx * sectorSize)
+            let upperOffset = trackOffset + (upperSectorIdx * sectorSize)
+            
+            guard lowerOffset + sectorSize <= diskData.count,
+                  upperOffset + sectorSize <= diskData.count else { return nil }
+            
+            var blockData = Data()
+            blockData.append(diskData.subdata(in: lowerOffset..<(lowerOffset + sectorSize)))
+            blockData.append(diskData.subdata(in: upperOffset..<(upperOffset + sectorSize)))
+            
+            return blockData
+        }
+    }
+    
+    /// Writes a 512-byte block to disk data, handling sector interleaving for floppy images
+    private func writeBlock(_ diskData: NSMutableData, blockIndex: Int, blockData: Data, dataOffset: Int, isDOSOrder: Bool) {
+        guard blockData.count == BLOCK_SIZE else {
+            print("   ❌ Block data size mismatch: \(blockData.count) != \(BLOCK_SIZE)")
+            return
+        }
+        
+        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        
+        if !isDOSOrder {
+            // Standard ProDOS Order (.po, .hdv, .2mg): Linear access
+            let offset = dataOffset + (blockIndex * BLOCK_SIZE)
+            blockData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+                memcpy(bytes + offset, ptr.baseAddress!, BLOCK_SIZE)
+            }
+        } else {
+            // DOS Order (.dsk, .do): Interleaved sectors
+            let blocksPerTrack = 8
+            let track = blockIndex / blocksPerTrack
+            let blockInTrack = blockIndex % blocksPerTrack
+            
+            let sectorSize = 256
+            let trackOffset = dataOffset + (track * 16 * sectorSize)
+            
+            // Select mapping based on track
+            let mapping = (track == 0) ? dosToProDOSMapTrack0 : dosToProDOSMapData
+            
+            // Get the two sector indices for this block
+            let lowerSectorIdx = mapping[blockInTrack * 2]
+            let upperSectorIdx = mapping[blockInTrack * 2 + 1]
+            
+            let lowerOffset = trackOffset + (lowerSectorIdx * sectorSize)
+            let upperOffset = trackOffset + (upperSectorIdx * sectorSize)
+            
+            // Write lower 256 bytes to first sector
+            blockData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+                memcpy(bytes + lowerOffset, ptr.baseAddress!, sectorSize)
+                memcpy(bytes + upperOffset, ptr.baseAddress! + sectorSize, sectorSize)
+            }
+        }
+    }
     
     // MARK: - 2MG Header Detection
     
@@ -87,10 +191,17 @@ class ProDOSWriter {
                     return
                 }
                 
+                let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+                let isDOSOrder = self.isDOSOrderFloppy(Data(referencing: diskData), diskImagePath: diskImagePath)
+                
+                if isDOSOrder {
+                    print("   📀 DOS Order floppy detected - using sector interleaving")
+                }
+                
                 // Check if filename already exists and rename if needed
                 var finalName = sanitizedName
                 var counter = 1
-                while self.fileExists(diskData, fileName: finalName) {
+                while self.fileExists(diskData, fileName: finalName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) {
                     // Auto-rename: FILENAME -> FILENAME.1, FILENAME.2, etc
                     let baseName = String(sanitizedName.prefix(13)) // Leave room for ".XX"
                     finalName = "\(baseName).\(counter)"
@@ -116,9 +227,10 @@ class ProDOSWriter {
                 print("   Size: \(fileData.count) bytes")
                 print("   Type: $\(String(format: "%02X", fileType))")
                 print("   Image: \(diskImagePath.lastPathComponent)")
+                print("   DOS Order: \(isDOSOrder)")
                 
                 // Find target directory block
-                guard let targetDirBlock = self.findDirectoryBlock(diskData, path: parentPath) else {
+                guard let targetDirBlock = self.findDirectoryBlock(diskData, path: parentPath, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                     DispatchQueue.main.async {
                         completion(false, "Parent directory not found: \(parentPath)")
                     }
@@ -128,18 +240,18 @@ class ProDOSWriter {
                 print("   📂 Target directory block: \(targetDirBlock)")
                 
                 // 1. Find free directory entry in target directory
-                guard let (dirBlock, entryOffset) = self.findFreeDirectoryEntry(diskData, dirBlock: targetDirBlock) else {
+                guard let (dirBlock, entryOffsetInBlock) = self.findFreeDirectoryEntry(diskData, dirBlock: targetDirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                     DispatchQueue.main.async {
                         completion(false, "No free directory entries in \(parentPath)")
                     }
                     return
                 }
                 
-                print("   📂 Free entry at block \(dirBlock), offset \(entryOffset)")
+                print("   📂 Free entry at block \(dirBlock), entry offset \(entryOffsetInBlock)")
                 
                 // 2. Allocate blocks for file data
-                let blocksNeeded = (fileData.count + self.BLOCK_SIZE - 1) / self.BLOCK_SIZE
-                guard let dataBlocks = self.allocateBlocks(diskData, count: blocksNeeded) else {
+                let blocksNeeded = max(1, (fileData.count + self.BLOCK_SIZE - 1) / self.BLOCK_SIZE)
+                guard let dataBlocks = self.allocateBlocks(diskData, count: blocksNeeded, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                     DispatchQueue.main.async {
                         completion(false, "Not enough free blocks (need \(blocksNeeded))")
                     }
@@ -149,7 +261,7 @@ class ProDOSWriter {
                 print("   💾 Allocated \(blocksNeeded) blocks: \(dataBlocks)")
                 
                 // 3. Write file data to allocated blocks
-                self.writeFileData(diskData, fileData: fileData, blocks: dataBlocks)
+                self.writeFileData(diskData, fileData: fileData, blocks: dataBlocks, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
                 
                 // 4. For sapling/tree files, create index block(s)
                 var keyBlock = 0  // Will be set based on file type
@@ -165,14 +277,14 @@ class ProDOSWriter {
                     // Tree file - need master index + multiple index blocks
                     let numIndexBlocks = (dataBlocks.count + 255) / 256  // Round up
                     
-                    guard let indexBlocks = self.allocateBlocks(diskData, count: numIndexBlocks) else {
+                    guard let indexBlocks = self.allocateBlocks(diskData, count: numIndexBlocks, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                         DispatchQueue.main.async {
                             completion(false, "Could not allocate index blocks")
                         }
                         return
                     }
                     
-                    guard let masterIndexBlocks = self.allocateBlocks(diskData, count: 1) else {
+                    guard let masterIndexBlocks = self.allocateBlocks(diskData, count: 1, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                         DispatchQueue.main.async {
                             completion(false, "Could not allocate master index block")
                         }
@@ -187,16 +299,16 @@ class ProDOSWriter {
                         let startIdx = i * 256
                         let endIdx = min(startIdx + 256, dataBlocks.count)
                         let blocksForThisIndex = Array(dataBlocks[startIdx..<endIdx])
-                        self.createIndexBlock(diskData, indexBlock: indexBlocks[i], dataBlocks: blocksForThisIndex)
+                        self.createIndexBlock(diskData, indexBlock: indexBlocks[i], dataBlocks: blocksForThisIndex, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
                     }
                     
                     // Create master index block pointing to index blocks
-                    self.createMasterIndexBlock(diskData, masterIndexBlock: keyBlock, indexBlocks: indexBlocks)
+                    self.createMasterIndexBlock(diskData, masterIndexBlock: keyBlock, indexBlocks: indexBlocks, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
                     print("   🌳 Created tree file: master index at \(keyBlock), \(numIndexBlocks) index blocks")
                     
                 } else if dataBlocks.count > 1 {
                     // Sapling file - need one index block
-                    guard let indexBlocks = self.allocateBlocks(diskData, count: 1) else {
+                    guard let indexBlocks = self.allocateBlocks(diskData, count: 1, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                         DispatchQueue.main.async {
                             completion(false, "Could not allocate index block")
                         }
@@ -204,7 +316,7 @@ class ProDOSWriter {
                     }
                     keyBlock = indexBlocks[0]
                     totalBlocks += 1  // Include index block in count
-                    self.createIndexBlock(diskData, indexBlock: keyBlock, dataBlocks: dataBlocks)
+                    self.createIndexBlock(diskData, indexBlock: keyBlock, dataBlocks: dataBlocks, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
                     print("   📇 Created index block at \(keyBlock)")
                     
                 } else {
@@ -213,14 +325,15 @@ class ProDOSWriter {
                 }
                 
                 // 5. Create directory entry
-                self.createDirectoryEntry(diskData, dirBlock: dirBlock, entryOffset: entryOffset,
+                self.createDirectoryEntry(diskData, dirBlock: dirBlock, entryOffsetInBlock: entryOffsetInBlock,
                                         fileName: finalName, fileType: fileType, auxType: auxType,
-                                        keyBlock: keyBlock, blockCount: totalBlocks, fileSize: fileData.count)
+                                        keyBlock: keyBlock, blockCount: totalBlocks, fileSize: fileData.count,
+                                        dataOffset: dataOffset, isDOSOrder: isDOSOrder)
                 
-                // 5. Update file count in target directory
-                self.incrementFileCount(diskData, dirBlock: targetDirBlock)
+                // 6. Update file count in target directory
+                self.incrementFileCount(diskData, dirBlock: targetDirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
                 
-                // 6. Write modified disk image back to file
+                // 7. Write modified disk image back to file
                 try diskData.write(to: diskImagePath, options: .atomic)
                 
                 print("   ✅ File added successfully!")
@@ -241,47 +354,39 @@ class ProDOSWriter {
     // MARK: - Create Index Block
     
     /// Creates a master index block for tree files (storage type 3)
-    private func createMasterIndexBlock(_ diskData: NSMutableData, masterIndexBlock: Int, indexBlocks: [Int]) {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let offset = masterIndexBlock * BLOCK_SIZE
-        
-        // Clear the block
-        memset(bytes + offset, 0, BLOCK_SIZE)
+    private func createMasterIndexBlock(_ diskData: NSMutableData, masterIndexBlock: Int, indexBlocks: [Int], dataOffset: Int, isDOSOrder: Bool) {
+        var blockData = Data(repeating: 0, count: BLOCK_SIZE)
         
         // Write index block pointers
         // Format: first 256 bytes are low bytes, second 256 bytes are high bytes
         for i in 0..<min(indexBlocks.count, 256) {
             let block = indexBlocks[i]
-            bytes[offset + i] = UInt8(block & 0xFF)
-            bytes[offset + 256 + i] = UInt8((block >> 8) & 0xFF)
+            blockData[i] = UInt8(block & 0xFF)
+            blockData[256 + i] = UInt8((block >> 8) & 0xFF)
         }
+        
+        writeBlock(diskData, blockIndex: masterIndexBlock, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
     }
     
     /// Creates an index block for sapling files (storage type 2)
-    private func createIndexBlock(_ diskData: NSMutableData, indexBlock: Int, dataBlocks: [Int]) {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let offset = indexBlock * BLOCK_SIZE
-        
-        // Clear the block
-        memset(bytes + offset, 0, BLOCK_SIZE)
+    private func createIndexBlock(_ diskData: NSMutableData, indexBlock: Int, dataBlocks: [Int], dataOffset: Int, isDOSOrder: Bool) {
+        var blockData = Data(repeating: 0, count: BLOCK_SIZE)
         
         // Write data block pointers
         // Format: first 256 bytes are low bytes, second 256 bytes are high bytes
         for i in 0..<min(dataBlocks.count, 256) {
             let block = dataBlocks[i]
-            bytes[offset + i] = UInt8(block & 0xFF)
-            bytes[offset + 256 + i] = UInt8((block >> 8) & 0xFF)
+            blockData[i] = UInt8(block & 0xFF)
+            blockData[256 + i] = UInt8((block >> 8) & 0xFF)
         }
+        
+        writeBlock(diskData, blockIndex: indexBlock, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
     }
-    
-    // MARK: - Find Free Directory Entry
     
     // MARK: - Find Directory Block by Path
     
     /// Finds the directory block for a given path
-    /// - Parameter path: Directory path (e.g., "/" for root, "/SYSTEM" for subdirectory)
-    /// - Returns: Block number of the directory, or nil if not found
-    private func findDirectoryBlock(_ diskData: NSMutableData, path: String) -> Int? {
+    private func findDirectoryBlock(_ diskData: NSMutableData, path: String, dataOffset: Int, isDOSOrder: Bool) -> Int? {
         // Root directory
         if path == "/" {
             return VOLUME_DIR_BLOCK
@@ -291,53 +396,57 @@ class ProDOSWriter {
         let components = path.split(separator: "/").map(String.init)
         guard !components.isEmpty else { return VOLUME_DIR_BLOCK }
         
-        let bytes = diskData.bytes.assumingMemoryBound(to: UInt8.self)
         var currentDirBlock = VOLUME_DIR_BLOCK
         
         // Navigate through each path component
         for dirName in components {
-            guard let (_, entryOffset) = findFileEntryInDirectory(diskData, dirBlock: currentDirBlock, fileName: dirName) else {
+            guard let (_, entryData) = findFileEntryInDirectory(diskData, dirBlock: currentDirBlock, fileName: dirName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                 print("   ❌ Directory '\(dirName)' not found in path")
                 return nil
             }
             
             // Check if it's actually a directory
-            let storageType = bytes[entryOffset] >> 4
+            let storageType = entryData[0] >> 4
             guard storageType == 0xD else {
                 print("   ❌ '\(dirName)' is not a directory (storage type: \(storageType))")
                 return nil
             }
             
             // Get the subdirectory's block
-            let keyBlockLo = bytes[entryOffset + 0x11]
-            let keyBlockHi = bytes[entryOffset + 0x12]
+            let keyBlockLo = entryData[0x11]
+            let keyBlockHi = entryData[0x12]
             currentDirBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
         }
         
         return currentDirBlock
     }
     
-    /// Finds a file entry within a specific directory block
-    private func findFileEntryInDirectory(_ diskData: NSMutableData, dirBlock: Int, fileName: String) -> (block: Int, offset: Int)? {
-        let bytes = diskData.bytes.assumingMemoryBound(to: UInt8.self)
+    /// Finds a file entry within a specific directory block - returns (blockNum, entryData)
+    private func findFileEntryInDirectory(_ diskData: NSMutableData, dirBlock: Int, fileName: String, dataOffset: Int, isDOSOrder: Bool) -> (block: Int, entryData: Data)? {
         var currentBlock = dirBlock
         var entryIndex = 1  // Skip header entry
         
         while currentBlock != 0 {
-            let blockOffset = currentBlock * BLOCK_SIZE
+            guard let blockData = readBlock(Data(referencing: diskData), blockIndex: currentBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                break
+            }
             
             while entryIndex < ENTRIES_PER_BLOCK {
-                let entryOffset = blockOffset + 4 + (entryIndex * ENTRY_LENGTH)
-                let storageType = bytes[entryOffset] >> 4
+                let entryOffset = 4 + (entryIndex * ENTRY_LENGTH)
+                let storageType = blockData[entryOffset] >> 4
                 
                 if storageType != 0 {
                     // Read entry name
-                    let nameLength = Int(bytes[entryOffset] & 0x0F)
-                    let nameBytes = Array(UnsafeBufferPointer(start: bytes + entryOffset + 1, count: min(nameLength, 15)))
-                    let entryName = String(bytes: nameBytes, encoding: .ascii) ?? ""
+                    let nameLength = Int(blockData[entryOffset] & 0x0F)
+                    var entryName = ""
+                    for i in 0..<min(nameLength, 15) {
+                        let char = blockData[entryOffset + 1 + i] & 0x7F
+                        entryName.append(Character(UnicodeScalar(char)))
+                    }
                     
                     if entryName.uppercased() == fileName.uppercased() {
-                        return (currentBlock, entryOffset)
+                        let entryData = blockData.subdata(in: entryOffset..<(entryOffset + ENTRY_LENGTH))
+                        return (currentBlock, entryData)
                     }
                 }
                 
@@ -345,8 +454,8 @@ class ProDOSWriter {
             }
             
             // Move to next block in directory chain
-            let nextBlockLo = Int(bytes[blockOffset + 2])
-            let nextBlockHi = Int(bytes[blockOffset + 3])
+            let nextBlockLo = Int(blockData[2])
+            let nextBlockHi = Int(blockData[3])
             currentBlock = nextBlockLo | (nextBlockHi << 8)
             entryIndex = 0
         }
@@ -354,27 +463,31 @@ class ProDOSWriter {
         return nil
     }
     
-    private func findFreeDirectoryEntry(_ diskData: NSMutableData, dirBlock: Int? = nil) -> (block: Int, offset: Int)? {
-        let bytes = diskData.bytes.assumingMemoryBound(to: UInt8.self)
-        var currentBlock = dirBlock ?? VOLUME_DIR_BLOCK
+    // MARK: - Find Free Directory Entry
+    
+    private func findFreeDirectoryEntry(_ diskData: NSMutableData, dirBlock: Int, dataOffset: Int, isDOSOrder: Bool) -> (block: Int, entryOffsetInBlock: Int)? {
+        var currentBlock = dirBlock
         var entryIndex = 1  // Skip header entry
         
         while currentBlock != 0 {
-            let blockOffset = currentBlock * BLOCK_SIZE
+            guard let blockData = readBlock(Data(referencing: diskData), blockIndex: currentBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                break
+            }
             
             while entryIndex < ENTRIES_PER_BLOCK {
-                let entryOffset = blockOffset + 4 + (entryIndex * ENTRY_LENGTH)
-                let storageType = bytes[entryOffset] >> 4
+                let entryOffset = 4 + (entryIndex * ENTRY_LENGTH)
+                let storageType = blockData[entryOffset] >> 4
                 
                 if storageType == 0 {
+                    // Found free entry - return block number and offset within block
                     return (currentBlock, entryOffset)
                 }
                 
                 entryIndex += 1
             }
             
-            let nextBlockLo = Int(bytes[blockOffset + 2])
-            let nextBlockHi = Int(bytes[blockOffset + 3])
+            let nextBlockLo = Int(blockData[2])
+            let nextBlockHi = Int(blockData[3])
             currentBlock = nextBlockLo | (nextBlockHi << 8)
             entryIndex = 0
         }
@@ -384,17 +497,21 @@ class ProDOSWriter {
     
     // MARK: - Allocate Blocks
     
-    private func allocateBlocks(_ diskData: NSMutableData, count: Int) -> [Int]? {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let dataOffset = get2MGDataOffset(Data(referencing: diskData))
+    private func allocateBlocks(_ diskData: NSMutableData, count: Int, dataOffset: Int, isDOSOrder: Bool) -> [Int]? {
+        guard count > 0 else { return [] }
         
         var allocatedBlocks: [Int] = []
         
-        let startBlock = 24
-        let volHeaderOffset = dataOffset + VOLUME_DIR_BLOCK * BLOCK_SIZE
-        let totalBlocksLo = Int(bytes[volHeaderOffset + 0x29])
-        let totalBlocksHi = Int(bytes[volHeaderOffset + 0x2A])
+        // Read volume header to get total blocks
+        guard let volBlock = readBlock(Data(referencing: diskData), blockIndex: VOLUME_DIR_BLOCK, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+            return nil
+        }
+        
+        let totalBlocksLo = Int(volBlock[0x29])
+        let totalBlocksHi = Int(volBlock[0x2A])
         let totalBlocks = totalBlocksLo | (totalBlocksHi << 8)
+        
+        let startBlock = 24  // Start searching after system blocks
         
         print("   🔍 Searching for \(count) free blocks (total: \(totalBlocks))")
         
@@ -415,16 +532,25 @@ class ProDOSWriter {
             let byteIndex = bitIndex / 8
             let bitPosition = 7 - (bitIndex % 8)
             
+            // Calculate which bitmap block and byte offset
             let bitmapBlock = bitmapStartBlock + (byteIndex / BLOCK_SIZE)
             let bitmapByteOffset = byteIndex % BLOCK_SIZE
-            let bitmapOffset = dataOffset + bitmapBlock * BLOCK_SIZE + bitmapByteOffset
             
-            let bitmapByte = bytes[bitmapOffset]
+            // Read bitmap block
+            guard let bitmapBlockData = readBlock(Data(referencing: diskData), blockIndex: bitmapBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                continue
+            }
+            
+            let bitmapByte = bitmapBlockData[bitmapByteOffset]
             let isFree = (bitmapByte & (1 << bitPosition)) != 0
             
             if isFree {
                 allocatedBlocks.append(block)
-                bytes[bitmapOffset] = bitmapByte & ~(1 << bitPosition)
+                
+                // Mark as allocated by writing back the bitmap block
+                var mutableBitmapBlock = bitmapBlockData
+                mutableBitmapBlock[bitmapByteOffset] = bitmapByte & ~(1 << bitPosition)
+                writeBlock(diskData, blockIndex: bitmapBlock, blockData: mutableBitmapBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
             }
         }
         
@@ -435,50 +561,46 @@ class ProDOSWriter {
         return allocatedBlocks
     }
     
-    // MARK: - Write File Data (FIXED with memcpy)
+    // MARK: - Write File Data
     
-    private func writeFileData(_ diskData: NSMutableData, fileData: Data, blocks: [Int]) {
+    private func writeFileData(_ diskData: NSMutableData, fileData: Data, blocks: [Int], dataOffset: Int, isDOSOrder: Bool) {
         print("   📝 Writing \(fileData.count) bytes to \(blocks.count) blocks")
         
-        let diskBytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        var dataPosition = 0
         
-        fileData.withUnsafeBytes { (fileBytes: UnsafeRawBufferPointer) in
-            guard let fileBaseAddress = fileBytes.baseAddress else { return }
+        for (index, block) in blocks.enumerated() {
+            let bytesToWrite = min(BLOCK_SIZE, fileData.count - dataPosition)
             
-            var dataOffset = 0
-            
-            for (index, block) in blocks.enumerated() {
-                let blockOffset = block * BLOCK_SIZE
-                let bytesToWrite = min(BLOCK_SIZE, fileData.count - dataOffset)
-                
-                print("   📦 Block \(index): block#\(block), writing \(bytesToWrite) bytes")
-                
-                // Copy file data to disk using memcpy
-                memcpy(diskBytes + blockOffset, fileBaseAddress + dataOffset, bytesToWrite)
-                
-                // Zero-fill rest of block if needed
-                if bytesToWrite < BLOCK_SIZE {
-                    memset(diskBytes + blockOffset + bytesToWrite, 0, BLOCK_SIZE - bytesToWrite)
-                }
-                
-                dataOffset += bytesToWrite
+            var blockData = Data(repeating: 0, count: BLOCK_SIZE)
+            if bytesToWrite > 0 {
+                blockData.replaceSubrange(0..<bytesToWrite, with: fileData.subdata(in: dataPosition..<(dataPosition + bytesToWrite)))
             }
             
-            print("   ✅ Wrote \(dataOffset) bytes total")
+            print("   📦 Block \(index): block#\(block), writing \(bytesToWrite) bytes")
+            
+            writeBlock(diskData, blockIndex: block, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+            
+            dataPosition += bytesToWrite
         }
+        
+        print("   ✅ Wrote \(dataPosition) bytes total")
     }
     
     // MARK: - Create Directory Entry
     
-    private func createDirectoryEntry(_ diskData: NSMutableData, dirBlock: Int, entryOffset: Int,
+    private func createDirectoryEntry(_ diskData: NSMutableData, dirBlock: Int, entryOffsetInBlock: Int,
                                      fileName: String, fileType: UInt8, auxType: UInt16,
-                                     keyBlock: Int, blockCount: Int, fileSize: Int) {
+                                     keyBlock: Int, blockCount: Int, fileSize: Int,
+                                     dataOffset: Int, isDOSOrder: Bool) {
         
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        // Read current directory block
+        guard var blockData = readBlock(Data(referencing: diskData), blockIndex: dirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+            return
+        }
         
         let storageType: UInt8
         if blockCount == 0 {
-            storageType = 0  // Deleted/Empty (0 bytes)
+            storageType = 1  // Seedling for zero-length file
         } else if blockCount == 1 {
             storageType = 1  // Seedling
         } else if blockCount <= 256 {
@@ -487,11 +609,10 @@ class ProDOSWriter {
             storageType = 3  // Tree (has master index)
         }
         
-        var nameBytes = [UInt8](repeating: 0x00, count: 15)  // Pad with 0x00
+        var nameBytes = [UInt8](repeating: 0x00, count: 15)
         let nameData = fileName.uppercased().data(using: .ascii) ?? Data()
         let nameLen = min(nameData.count, 15)
         for i in 0..<nameLen {
-            // Directory entry names use PLAIN ASCII (no high bit)
             nameBytes[i] = nameData[i]
         }
         
@@ -545,23 +666,341 @@ class ProDOSWriter {
         entry[0x23] = entry[0x1A]
         entry[0x24] = entry[0x1B]
         
-        // Bytes 0x25-0x26: Header pointer (only for subdirectories)
-        // For regular files, should be 0x00 0x00 or last mod date
         entry[0x25] = 0x00
         entry[0x26] = 0x00
         
-        memcpy(bytes + entryOffset, entry, ENTRY_LENGTH)
+        // Write entry into block data
+        for i in 0..<ENTRY_LENGTH {
+            blockData[entryOffsetInBlock + i] = entry[i]
+        }
+        
+        // Write block back to disk
+        writeBlock(diskData, blockIndex: dirBlock, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+    }
+    
+    // MARK: - Increment File Count
+    
+    private func incrementFileCount(_ diskData: NSMutableData, dirBlock: Int, dataOffset: Int, isDOSOrder: Bool) {
+        guard var blockData = readBlock(Data(referencing: diskData), blockIndex: dirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+            return
+        }
+        
+        // File count at +$25-$26 (same for volume dir and subdirs)
+        let fileCountOffset = 0x25
+        
+        let currentCountLo = Int(blockData[fileCountOffset])
+        let currentCountHi = Int(blockData[fileCountOffset + 1])
+        var fileCount = currentCountLo | (currentCountHi << 8)
+        
+        fileCount += 1
+        
+        blockData[fileCountOffset] = UInt8(fileCount & 0xFF)
+        blockData[fileCountOffset + 1] = UInt8((fileCount >> 8) & 0xFF)
+        
+        writeBlock(diskData, blockIndex: dirBlock, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+        
+        print("   📊 Updated file count in block \(dirBlock): \(fileCount)")
+    }
+    
+    // MARK: - Check File Exists
+    
+    private func fileExists(_ diskData: NSMutableData, fileName: String, dataOffset: Int, isDOSOrder: Bool) -> Bool {
+        return findFileEntry(Data(referencing: diskData), fileName: fileName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) != nil
+    }
+    
+    // MARK: - Find File Entry
+    
+    private func findFileEntry(_ diskData: Data, fileName: String, dataOffset: Int, isDOSOrder: Bool, dirBlock: Int? = nil) -> (block: Int, entryOffsetInBlock: Int)? {
+        let searchName = fileName.uppercased()
+        
+        print("🔍 Searching for file: '\(searchName)' (dataOffset: \(dataOffset), isDOSOrder: \(isDOSOrder))")
+        
+        if let specificDir = dirBlock {
+            return searchDirectoryOnly(diskData, directoryBlock: specificDir, fileName: searchName, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+        } else {
+            return searchDirectory(diskData, directoryBlock: VOLUME_DIR_BLOCK, fileName: searchName, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+        }
+    }
+    
+    /// Searches ONLY in the specified directory (non-recursive)
+    private func searchDirectoryOnly(_ diskData: Data, directoryBlock: Int, fileName: String, dataOffset: Int, isDOSOrder: Bool) -> (block: Int, entryOffsetInBlock: Int)? {
+        var currentBlock = directoryBlock
+        var entryIndex = (directoryBlock == VOLUME_DIR_BLOCK) ? 1 : 0
+        
+        while currentBlock != 0 {
+            guard let blockData = readBlock(diskData, blockIndex: currentBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                break
+            }
+            
+            while entryIndex < ENTRIES_PER_BLOCK {
+                let entryOffset = 4 + (entryIndex * ENTRY_LENGTH)
+                let storageType = blockData[entryOffset] >> 4
+                
+                if storageType != 0 {
+                    let nameLen = Int(blockData[entryOffset] & 0x0F)
+                    var entryName = ""
+                    for i in 0..<nameLen {
+                        let char = blockData[entryOffset + 1 + i] & 0x7F
+                        entryName.append(Character(UnicodeScalar(char)))
+                    }
+                    
+                    if entryName == fileName {
+                        return (currentBlock, entryOffset)
+                    }
+                }
+                
+                entryIndex += 1
+            }
+            
+            let nextBlockLo = blockData[2]
+            let nextBlockHi = blockData[3]
+            currentBlock = Int(nextBlockLo) | (Int(nextBlockHi) << 8)
+            entryIndex = 0
+        }
+        
+        return nil
+    }
+    
+    private func searchDirectory(_ diskData: Data, directoryBlock: Int, fileName: String, dataOffset: Int, isDOSOrder: Bool) -> (block: Int, entryOffsetInBlock: Int)? {
+        var currentBlock = directoryBlock
+        var entryIndex = (directoryBlock == VOLUME_DIR_BLOCK) ? 1 : 0
+        var subdirectories: [(block: Int, name: String)] = []
+        
+        print("   📂 Searching directory block \(directoryBlock)")
+        
+        while currentBlock != 0 {
+            guard let blockData = readBlock(diskData, blockIndex: currentBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                print("   ❌ Failed to read block \(currentBlock)")
+                break
+            }
+            
+            while entryIndex < ENTRIES_PER_BLOCK {
+                let entryOffset = 4 + (entryIndex * ENTRY_LENGTH)
+                let storageType = blockData[entryOffset] >> 4
+                
+                if storageType != 0 {
+                    let nameLen = Int(blockData[entryOffset] & 0x0F)
+                    var entryName = ""
+                    for i in 0..<nameLen {
+                        let char = blockData[entryOffset + 1 + i] & 0x7F
+                        entryName.append(Character(UnicodeScalar(char)))
+                    }
+                    
+                    print("      Found: '\(entryName)' (storage type: \(storageType))")
+                    
+                    if entryName == fileName {
+                        print("      ✅ Match found!")
+                        return (currentBlock, entryOffset)
+                    }
+                    
+                    // If directory, remember for recursive search
+                    if storageType == 0xD {
+                        let keyBlockLo = blockData[entryOffset + 0x11]
+                        let keyBlockHi = blockData[entryOffset + 0x12]
+                        let keyBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
+                        subdirectories.append((block: keyBlock, name: entryName))
+                    }
+                }
+                
+                entryIndex += 1
+            }
+            
+            let nextBlockLo = blockData[2]
+            let nextBlockHi = blockData[3]
+            currentBlock = Int(nextBlockLo) | (Int(nextBlockHi) << 8)
+            entryIndex = 0
+        }
+        
+        // Search subdirectories recursively
+        for subdir in subdirectories {
+            if let result = searchDirectory(diskData, directoryBlock: subdir.block, fileName: fileName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) {
+                return result
+            }
+        }
+        
+        return nil
+    }
+    
+    // MARK: - Delete File
+    
+    func deleteFile(diskImagePath: URL, fileName: String, completion: @escaping (Bool, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read disk image")
+                    }
+                    return
+                }
+                
+                let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+                let isDOSOrder = self.isDOSOrderFloppy(Data(referencing: diskData), diskImagePath: diskImagePath)
+                
+                print("🗑️ Deleting file from ProDOS image:")
+                print("   File: \(fileName)")
+                print("   DOS Order: \(isDOSOrder)")
+                
+                // Find the file entry
+                guard let (blockNum, entryOffsetInBlock) = self.findFileEntry(Data(referencing: diskData), fileName: fileName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                    DispatchQueue.main.async {
+                        completion(false, "File not found")
+                    }
+                    return
+                }
+                
+                // Read the directory block
+                guard var blockData = self.readBlock(Data(referencing: diskData), blockIndex: blockNum, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read directory block")
+                    }
+                    return
+                }
+                
+                // Get file info before deleting
+                let storageType = blockData[entryOffsetInBlock] >> 4
+                let keyBlockLo = blockData[entryOffsetInBlock + 0x11]
+                let keyBlockHi = blockData[entryOffsetInBlock + 0x12]
+                let keyBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
+                let blocksUsedLo = blockData[entryOffsetInBlock + 0x13]
+                let blocksUsedHi = blockData[entryOffsetInBlock + 0x14]
+                let blocksUsed = Int(blocksUsedLo) | (Int(blocksUsedHi) << 8)
+                
+                print("   📝 Storage type: \(storageType)")
+                print("   📦 Blocks used: \(blocksUsed)")
+                print("   🔑 Key block: \(keyBlock)")
+                
+                // Free all blocks used by the file
+                var blocksToFree: [Int] = []
+                
+                if storageType == 1 {
+                    // Seedling - just the data block
+                    blocksToFree.append(keyBlock)
+                } else if storageType == 2 {
+                    // Sapling - index block + data blocks
+                    if let indexBlockData = self.readBlock(Data(referencing: diskData), blockIndex: keyBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) {
+                        for i in 0..<256 {
+                            let ptrLo = indexBlockData[i]
+                            let ptrHi = indexBlockData[256 + i]
+                            let dataBlock = Int(ptrLo) | (Int(ptrHi) << 8)
+                            if dataBlock != 0 {
+                                blocksToFree.append(dataBlock)
+                            }
+                        }
+                    }
+                    blocksToFree.append(keyBlock)
+                } else if storageType == 3 {
+                    // Tree - master index + index blocks + data blocks
+                    if let masterBlockData = self.readBlock(Data(referencing: diskData), blockIndex: keyBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) {
+                        for i in 0..<256 {
+                            let indexPtrLo = masterBlockData[i]
+                            let indexPtrHi = masterBlockData[256 + i]
+                            let indexBlock = Int(indexPtrLo) | (Int(indexPtrHi) << 8)
+                            if indexBlock == 0 { continue }
+                            
+                            if let indexBlockData = self.readBlock(Data(referencing: diskData), blockIndex: indexBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) {
+                                for j in 0..<256 {
+                                    let dataPtrLo = indexBlockData[j]
+                                    let dataPtrHi = indexBlockData[256 + j]
+                                    let dataBlock = Int(dataPtrLo) | (Int(dataPtrHi) << 8)
+                                    if dataBlock != 0 {
+                                        blocksToFree.append(dataBlock)
+                                    }
+                                }
+                            }
+                            blocksToFree.append(indexBlock)
+                        }
+                    }
+                    blocksToFree.append(keyBlock)
+                } else if storageType == 0xD {
+                    // Subdirectory
+                    blocksToFree.append(keyBlock)
+                    print("   📂 Deleting subdirectory (1 block)")
+                }
+                
+                print("   🔓 Freeing \(blocksToFree.count) blocks")
+                
+                // Mark blocks as free in bitmap
+                self.freeBlocks(diskData, blocks: blocksToFree, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+                
+                // Clear directory entry (mark as deleted)
+                for i in 0..<self.ENTRY_LENGTH {
+                    blockData[entryOffsetInBlock + i] = 0
+                }
+                
+                // Write directory block back
+                self.writeBlock(diskData, blockIndex: blockNum, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+                
+                // Decrement file count
+                self.decrementFileCount(diskData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+                
+                // Write back to disk
+                try diskData.write(to: diskImagePath, options: .atomic)
+                
+                DispatchQueue.main.async {
+                    completion(true, "File deleted successfully")
+                }
+                
+                print("   ✅ File deleted successfully")
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "Error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    // MARK: - Free Blocks
+    
+    private func freeBlocks(_ diskData: NSMutableData, blocks: [Int], dataOffset: Int, isDOSOrder: Bool) {
+        let bitmapStartBlock = 6
+        
+        for block in blocks {
+            let byteIndex = block / 8
+            let bitPosition = 7 - (block % 8)
+            
+            let bitmapBlock = bitmapStartBlock + (byteIndex / BLOCK_SIZE)
+            let bitmapByteOffset = byteIndex % BLOCK_SIZE
+            
+            guard var bitmapBlockData = readBlock(Data(referencing: diskData), blockIndex: bitmapBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                continue
+            }
+            
+            bitmapBlockData[bitmapByteOffset] |= (1 << bitPosition)  // Set bit to 1 = free
+            
+            writeBlock(diskData, blockIndex: bitmapBlock, blockData: bitmapBlockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+        }
+    }
+    
+    // MARK: - Decrement File Count
+    
+    private func decrementFileCount(_ diskData: NSMutableData, dataOffset: Int, isDOSOrder: Bool) {
+        guard var blockData = readBlock(Data(referencing: diskData), blockIndex: VOLUME_DIR_BLOCK, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+            return
+        }
+        
+        // Volume directory: file count at +$25-$26
+        let fileCountOffset = 0x25
+        
+        let currentCountLo = Int(blockData[fileCountOffset])
+        let currentCountHi = Int(blockData[fileCountOffset + 1])
+        var fileCount = currentCountLo | (currentCountHi << 8)
+        
+        fileCount = max(0, fileCount - 1)
+        
+        blockData[fileCountOffset] = UInt8(fileCount & 0xFF)
+        blockData[fileCountOffset + 1] = UInt8((fileCount >> 8) & 0xFF)
+        
+        writeBlock(diskData, blockIndex: VOLUME_DIR_BLOCK, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+        
+        print("   📊 Updated file count: \(fileCount)")
     }
     
     // MARK: - Create Directory
     
-    /// Creates a new subdirectory in the disk image
     func createDirectory(diskImagePath: URL, directoryName: String, parentPath: String = "/", completion: @escaping (Bool, String) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            // Sanitize directory name
             let sanitizedName = self.sanitizeProDOSFilename(directoryName)
             
-            // Load disk image
             guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
                 DispatchQueue.main.async {
                     completion(false, "Could not read disk image")
@@ -570,9 +1009,10 @@ class ProDOSWriter {
             }
             
             let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+            let isDOSOrder = self.isDOSOrderFloppy(Data(referencing: diskData), diskImagePath: diskImagePath)
             
-            // Find parent directory block using path
-            guard let parentDirBlock = self.findDirectoryBlock(diskData, path: parentPath) else {
+            // Find parent directory block
+            guard let parentDirBlock = self.findDirectoryBlock(diskData, path: parentPath, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                 DispatchQueue.main.async {
                     completion(false, "Parent directory not found: \(parentPath)")
                 }
@@ -582,7 +1022,7 @@ class ProDOSWriter {
             print("   📂 Parent directory block: \(parentDirBlock) (path: \(parentPath))")
             
             // Find free directory entry in parent
-            guard let (entryDirBlock, entryOffset) = self.findFreeDirectoryEntry(diskData, dirBlock: parentDirBlock) else {
+            guard let (entryDirBlock, entryOffsetInBlock) = self.findFreeDirectoryEntry(diskData, dirBlock: parentDirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
                 DispatchQueue.main.async {
                     completion(false, "No free directory entries in \(parentPath)")
                 }
@@ -590,7 +1030,7 @@ class ProDOSWriter {
             }
             
             // Allocate a block for the new subdirectory
-            guard let blocks = self.allocateBlocks(diskData, count: 1),
+            guard let blocks = self.allocateBlocks(diskData, count: 1, dataOffset: dataOffset, isDOSOrder: isDOSOrder),
                   let dirBlock = blocks.first else {
                 DispatchQueue.main.async {
                     completion(false, "Could not allocate block for directory")
@@ -601,13 +1041,13 @@ class ProDOSWriter {
             print("📁 Creating directory '\(sanitizedName)' at block \(dirBlock)")
             
             // Create subdirectory header block
-            self.createSubdirectoryHeader(diskData, dirBlock: dirBlock, dirName: sanitizedName, parentBlock: parentDirBlock, parentEntryNum: 0, dataOffset: dataOffset)
+            self.createSubdirectoryHeader(diskData, dirBlock: dirBlock, dirName: sanitizedName, parentBlock: parentDirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
             
             // Create directory entry in parent
-            self.createDirectoryEntryForSubdir(diskData, dirBlock: entryDirBlock, entryOffset: entryOffset, dirName: sanitizedName, keyBlock: dirBlock, dataOffset: dataOffset)
+            self.createDirectoryEntryForSubdir(diskData, dirBlock: entryDirBlock, entryOffsetInBlock: entryOffsetInBlock, dirName: sanitizedName, keyBlock: dirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
             
             // Increment file count in parent directory
-            self.incrementFileCount(diskData, dirBlock: parentDirBlock)
+            self.incrementFileCount(diskData, dirBlock: parentDirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
             
             // Write back to disk
             guard diskData.write(to: diskImagePath, atomically: true) else {
@@ -627,32 +1067,26 @@ class ProDOSWriter {
     
     // MARK: - Create Subdirectory Header
     
-    private func createSubdirectoryHeader(_ diskData: NSMutableData, dirBlock: Int, dirName: String, parentBlock: Int, parentEntryNum: Int, dataOffset: Int) {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let blockOffset = dataOffset + (dirBlock * BLOCK_SIZE)
-        
-        // Clear the block
-        memset(bytes + blockOffset, 0, BLOCK_SIZE)
+    private func createSubdirectoryHeader(_ diskData: NSMutableData, dirBlock: Int, dirName: String, parentBlock: Int, dataOffset: Int, isDOSOrder: Bool) {
+        var blockData = Data(repeating: 0, count: BLOCK_SIZE)
         
         // +$00-01: Previous block (0x0000 for first block)
-        bytes[blockOffset + 0] = 0x00
-        bytes[blockOffset + 1] = 0x00
+        blockData[0] = 0x00
+        blockData[1] = 0x00
         
         // +$02-03: Next block (0x0000 - no next block initially)
-        bytes[blockOffset + 2] = 0x00
-        bytes[blockOffset + 3] = 0x00
+        blockData[2] = 0x00
+        blockData[3] = 0x00
         
         // +$04: Storage type (0xE = subdirectory header) + name length
         let nameLength = min(dirName.count, 15)
-        bytes[blockOffset + 4] = UInt8(0xE0 | nameLength)
+        blockData[4] = UInt8(0xE0 | nameLength)
         
         // +$05-$13: Directory name (15 bytes)
         for i in 0..<nameLength {
             let index = dirName.index(dirName.startIndex, offsetBy: i)
-            bytes[blockOffset + 5 + i] = UInt8(dirName[index].asciiValue ?? 0x20)
+            blockData[5 + i] = UInt8(dirName[index].asciiValue ?? 0x20)
         }
-        
-        // +$14-$1B: Reserved (8 bytes) - zeros
         
         // +$1C-$1F: Creation date/time
         let now = Date()
@@ -662,79 +1096,81 @@ class ProDOSWriter {
         if let year = components.year, let month = components.month, let day = components.day {
             let proDOSYear = year - 1900
             let dateWord = UInt16((proDOSYear << 9) | (month << 5) | day)
-            bytes[blockOffset + 0x1C] = UInt8(dateWord & 0xFF)
-            bytes[blockOffset + 0x1D] = UInt8((dateWord >> 8) & 0xFF)
+            blockData[0x1C] = UInt8(dateWord & 0xFF)
+            blockData[0x1D] = UInt8((dateWord >> 8) & 0xFF)
         }
         
         if let hour = components.hour, let minute = components.minute {
             let timeWord = UInt16((minute << 8) | hour)
-            bytes[blockOffset + 0x1E] = UInt8(timeWord & 0xFF)
-            bytes[blockOffset + 0x1F] = UInt8((timeWord >> 8) & 0xFF)
+            blockData[0x1E] = UInt8(timeWord & 0xFF)
+            blockData[0x1F] = UInt8((timeWord >> 8) & 0xFF)
         }
         
         // +$20: Version (0x00)
-        bytes[blockOffset + 0x20] = 0x00
+        blockData[0x20] = 0x00
         
         // +$21: Min version (0x00)
-        bytes[blockOffset + 0x21] = 0x00
+        blockData[0x21] = 0x00
         
         // +$22: Access (0xE3 = full access)
-        bytes[blockOffset + 0x22] = 0xE3
+        blockData[0x22] = 0xE3
         
         // +$23: Entry length (0x27 = 39 bytes)
-        bytes[blockOffset + 0x23] = 0x27
+        blockData[0x23] = 0x27
         
         // +$24: Entries per block (0x0D = 13)
-        bytes[blockOffset + 0x24] = 0x0D
+        blockData[0x24] = 0x0D
         
         // +$25-$26: File count (0x0000 initially - empty directory)
-        bytes[blockOffset + 0x25] = 0x00
-        bytes[blockOffset + 0x26] = 0x00
+        blockData[0x25] = 0x00
+        blockData[0x26] = 0x00
         
         // +$27-$28: Parent pointer (block number of parent directory)
-        bytes[blockOffset + 0x27] = UInt8(parentBlock & 0xFF)
-        bytes[blockOffset + 0x28] = UInt8((parentBlock >> 8) & 0xFF)
+        blockData[0x27] = UInt8(parentBlock & 0xFF)
+        blockData[0x28] = UInt8((parentBlock >> 8) & 0xFF)
         
-        // +$29: Parent entry number (which entry in parent points to this subdir)
-        bytes[blockOffset + 0x29] = UInt8(parentEntryNum)
+        // +$29: Parent entry number
+        blockData[0x29] = 0x00
         
         // +$2A: Parent entry length (0x27)
-        bytes[blockOffset + 0x2A] = 0x27
+        blockData[0x2A] = 0x27
         
-        print("   📝 Created subdirectory header at block \(dirBlock)")
+        writeBlock(diskData, blockIndex: dirBlock, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
     }
     
     // MARK: - Create Directory Entry for Subdirectory
     
-    private func createDirectoryEntryForSubdir(_ diskData: NSMutableData, dirBlock: Int, entryOffset: Int, dirName: String, keyBlock: Int, dataOffset: Int) {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        var entry = [UInt8](repeating: 0, count: ENTRY_LENGTH)
-        
-        // Storage type (0xD = subdirectory) + name length
-        let nameLength = min(dirName.count, 15)
-        entry[0] = UInt8(0xD0 | nameLength)
-        
-        // File name (bytes 1-15)
-        for i in 0..<nameLength {
-            let index = dirName.index(dirName.startIndex, offsetBy: i)
-            entry[1 + i] = UInt8(dirName[index].asciiValue ?? 0x20)
+    private func createDirectoryEntryForSubdir(_ diskData: NSMutableData, dirBlock: Int, entryOffsetInBlock: Int, dirName: String, keyBlock: Int, dataOffset: Int, isDOSOrder: Bool) {
+        guard var blockData = readBlock(Data(referencing: diskData), blockIndex: dirBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+            return
         }
         
-        // File type: 0x0F (DIR)
-        entry[0x10] = 0x0F
+        let nameLength = min(dirName.count, 15)
         
-        // Key pointer: block number of subdirectory
-        entry[0x11] = UInt8(keyBlock & 0xFF)
-        entry[0x12] = UInt8((keyBlock >> 8) & 0xFF)
+        // Storage type 0xD = subdirectory
+        blockData[entryOffsetInBlock] = UInt8(0xD0 | nameLength)
         
-        // Blocks used: 1 block initially
-        entry[0x13] = 0x01
-        entry[0x14] = 0x00
+        // Name
+        for i in 0..<nameLength {
+            let index = dirName.index(dirName.startIndex, offsetBy: i)
+            blockData[entryOffsetInBlock + 1 + i] = UInt8(dirName[index].asciiValue ?? 0x20)
+        }
         
-        // EOF: 512 bytes (one block)
-        entry[0x15] = 0x00
-        entry[0x16] = 0x02  // 512 = 0x0200
-        entry[0x17] = 0x00
+        // File type = 0x0F (directory)
+        blockData[entryOffsetInBlock + 0x10] = 0x0F
+        
+        // Key block
+        blockData[entryOffsetInBlock + 0x11] = UInt8(keyBlock & 0xFF)
+        blockData[entryOffsetInBlock + 0x12] = UInt8((keyBlock >> 8) & 0xFF)
+        
+        // Blocks used = 1
+        blockData[entryOffsetInBlock + 0x13] = 0x01
+        blockData[entryOffsetInBlock + 0x14] = 0x00
+        
+        // EOF = 512 (1 block)
+        blockData[entryOffsetInBlock + 0x15] = 0x00
+        blockData[entryOffsetInBlock + 0x16] = 0x02
+        blockData[entryOffsetInBlock + 0x17] = 0x00
         
         // Creation date/time
         let now = Date()
@@ -744,311 +1180,125 @@ class ProDOSWriter {
         if let year = components.year, let month = components.month, let day = components.day {
             let proDOSYear = year - 1900
             let dateWord = UInt16((proDOSYear << 9) | (month << 5) | day)
-            entry[0x18] = UInt8(dateWord & 0xFF)
-            entry[0x19] = UInt8((dateWord >> 8) & 0xFF)
+            blockData[entryOffsetInBlock + 0x18] = UInt8(dateWord & 0xFF)
+            blockData[entryOffsetInBlock + 0x19] = UInt8((dateWord >> 8) & 0xFF)
         }
         
         if let hour = components.hour, let minute = components.minute {
             let timeWord = UInt16((minute << 8) | hour)
-            entry[0x1A] = UInt8(timeWord & 0xFF)
-            entry[0x1B] = UInt8((timeWord >> 8) & 0xFF)
+            blockData[entryOffsetInBlock + 0x1A] = UInt8(timeWord & 0xFF)
+            blockData[entryOffsetInBlock + 0x1B] = UInt8((timeWord >> 8) & 0xFF)
         }
         
-        // Version: 0x00
-        entry[0x1C] = 0x00
+        // Version, min version
+        blockData[entryOffsetInBlock + 0x1C] = 0x00
+        blockData[entryOffsetInBlock + 0x1D] = 0x00
         
-        // Min version: 0x00
-        entry[0x1D] = 0x00
+        // Access
+        blockData[entryOffsetInBlock + 0x1E] = 0xE3
         
-        // Access: 0xE3 (full access)
-        entry[0x1E] = 0xE3
+        // Aux type = 0x0000 for directories
+        blockData[entryOffsetInBlock + 0x1F] = 0x00
+        blockData[entryOffsetInBlock + 0x20] = 0x00
         
-        // Aux type: 0x0000 for directories
-        entry[0x1F] = 0x00
-        entry[0x20] = 0x00
+        // Last mod = creation
+        blockData[entryOffsetInBlock + 0x21] = blockData[entryOffsetInBlock + 0x18]
+        blockData[entryOffsetInBlock + 0x22] = blockData[entryOffsetInBlock + 0x19]
+        blockData[entryOffsetInBlock + 0x23] = blockData[entryOffsetInBlock + 0x1A]
+        blockData[entryOffsetInBlock + 0x24] = blockData[entryOffsetInBlock + 0x1B]
         
-        // Last modified date (same as creation)
-        entry[0x21] = entry[0x18]
-        entry[0x22] = entry[0x19]
-        entry[0x23] = entry[0x1A]
-        entry[0x24] = entry[0x1B]
+        // Header pointer
+        blockData[entryOffsetInBlock + 0x25] = UInt8(keyBlock & 0xFF)
+        blockData[entryOffsetInBlock + 0x26] = UInt8((keyBlock >> 8) & 0xFF)
         
-        // Header pointer (for subdirectories, points to self)
-        entry[0x25] = UInt8(keyBlock & 0xFF)
-        entry[0x26] = UInt8((keyBlock >> 8) & 0xFF)
-        
-        memcpy(bytes + entryOffset, entry, ENTRY_LENGTH)
-        
-        print("   📝 Created directory entry for '\(dirName)' at offset \(entryOffset)")
+        writeBlock(diskData, blockIndex: dirBlock, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
     }
     
-    // MARK: - Update File Count
+    // MARK: - Rename File
     
-    private func incrementFileCount(_ diskData: NSMutableData, dirBlock: Int? = nil) {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let targetDirBlock = dirBlock ?? VOLUME_DIR_BLOCK
-        let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
-        let blockOffset = dataOffset + (targetDirBlock * BLOCK_SIZE)
-        
-        // Check storage type to determine file count offset
-        let storageType = bytes[blockOffset + 4] >> 4
-        let fileCountOffset: Int
-        
-        if storageType == 0xF {
-            // Volume directory: file count at +$25-$26
-            fileCountOffset = blockOffset + 0x25
-        } else {
-            // Subdirectory: file count at +$25-$26 (same as volume!)
-            fileCountOffset = blockOffset + 0x25
-        }
-        
-        let currentCountLo = Int(bytes[fileCountOffset])
-        let currentCountHi = Int(bytes[fileCountOffset + 1])
-        var fileCount = currentCountLo | (currentCountHi << 8)
-        
-        fileCount += 1
-        
-        bytes[fileCountOffset] = UInt8(fileCount & 0xFF)
-        bytes[fileCountOffset + 1] = UInt8((fileCount >> 8) & 0xFF)
-        
-        print("   📊 Updated file count in block \(targetDirBlock): \(fileCount)")
-    }
-    
-    // MARK: - Extract File
-    
-    func extractFile(diskImagePath: URL, fileName: String, completion: @escaping (Bool, Data?) -> Void) {
+    func renameFile(diskImagePath: URL, oldName: String, newName: String, completion: @escaping (Bool, String) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let diskData = try? Data(contentsOf: diskImagePath) else {
+            do {
+                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read disk image")
+                    }
+                    return
+                }
+                
+                let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
+                let isDOSOrder = self.isDOSOrderFloppy(Data(referencing: diskData), diskImagePath: diskImagePath)
+                
+                print("✏️ Renaming file in ProDOS image:")
+                print("   Old name: \(oldName)")
+                print("   New name: \(newName)")
+                
+                // Find the file entry
+                guard let (blockNum, entryOffsetInBlock) = self.findFileEntry(Data(referencing: diskData), fileName: oldName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                    DispatchQueue.main.async {
+                        completion(false, "File '\(oldName)' not found")
+                    }
+                    return
+                }
+                
+                // Sanitize new name
+                let sanitizedName = self.sanitizeProDOSFilename(newName)
+                print("   Sanitized name: \(sanitizedName)")
+                
+                // Check if new name already exists
+                if let _ = self.findFileEntry(Data(referencing: diskData), fileName: sanitizedName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) {
+                    DispatchQueue.main.async {
+                        completion(false, "A file named '\(sanitizedName)' already exists")
+                    }
+                    return
+                }
+                
+                // Read directory block
+                guard var blockData = self.readBlock(Data(referencing: diskData), blockIndex: blockNum, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read directory block")
+                    }
+                    return
+                }
+                
+                // Get storage type from first byte
+                let storageTypeAndLength = blockData[entryOffsetInBlock]
+                let storageType = storageTypeAndLength >> 4
+                
+                // Update storage type + name length byte
+                let nameLen = min(sanitizedName.count, 15)
+                blockData[entryOffsetInBlock] = (storageType << 4) | UInt8(nameLen)
+                
+                // Clear old name (15 bytes)
+                for i in 0..<15 {
+                    blockData[entryOffsetInBlock + 1 + i] = 0x00
+                }
+                
+                // Write new name
+                for (i, char) in sanitizedName.uppercased().prefix(15).enumerated() {
+                    blockData[entryOffsetInBlock + 1 + i] = UInt8(char.asciiValue ?? 0x20)
+                }
+                
+                print("   📝 Updated filename at block \(blockNum)")
+                
+                // Write block back
+                self.writeBlock(diskData, blockIndex: blockNum, blockData: blockData, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+                
+                // Write to disk
+                try diskData.write(to: diskImagePath, options: .atomic)
+                
                 DispatchQueue.main.async {
-                    completion(false, nil)
+                    completion(true, "File renamed successfully")
                 }
-                return
-            }
-            
-            print("📤 Extracting file from ProDOS image:")
-            print("   File: \(fileName)")
-            
-            guard let (_, entryOffset) = self.findFileEntry(diskData, fileName: fileName) else {
-                print("   ❌ File not found")
+                
+                print("   ✅ File renamed successfully!")
+                
+            } catch {
                 DispatchQueue.main.async {
-                    completion(false, nil)
+                    completion(false, "Error: \(error.localizedDescription)")
                 }
-                return
-            }
-            
-            let storageType = diskData[entryOffset] >> 4
-            let keyBlockLo = diskData[entryOffset + 0x11]
-            let keyBlockHi = diskData[entryOffset + 0x12]
-            let keyBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
-            
-            let sizeLo = diskData[entryOffset + 0x15]
-            let sizeMid = diskData[entryOffset + 0x16]
-            let sizeHi = diskData[entryOffset + 0x17]
-            let fileSize = Int(sizeLo) | (Int(sizeMid) << 8) | (Int(sizeHi) << 16)
-            
-            print("   📝 Storage type: \(storageType)")
-            print("   📍 Key block: \(keyBlock)")
-            print("   📏 File size: \(fileSize) bytes")
-            
-            var fileData = Data()
-            
-            if storageType == 1 {
-                // Seedling file (single block)
-                let blockOffset = keyBlock * self.BLOCK_SIZE
-                fileData = diskData[blockOffset..<(blockOffset + min(fileSize, self.BLOCK_SIZE))]
-            } else if storageType == 2 {
-                // Sapling file (index block points to data blocks)
-                let indexBlockOffset = keyBlock * self.BLOCK_SIZE
-                var remainingSize = fileSize
-                
-                for i in 0..<256 {
-                    if remainingSize <= 0 { break }
-                    
-                    // ProDOS format: bytes 0-255 are low bytes, bytes 256-511 are high bytes
-                    let ptrLo = diskData[indexBlockOffset + i]
-                    let ptrHi = diskData[indexBlockOffset + 256 + i]
-                    let dataBlock = Int(ptrLo) | (Int(ptrHi) << 8)
-                    
-                    if dataBlock == 0 { break }
-                    
-                    let blockOffset = dataBlock * self.BLOCK_SIZE
-                    let bytesToRead = min(self.BLOCK_SIZE, remainingSize)
-                    fileData.append(diskData[blockOffset..<(blockOffset + bytesToRead)])
-                    remainingSize -= bytesToRead
-                }
-            } else if storageType == 3 {
-                // Tree file (master index block points to index blocks)
-                let masterIndexOffset = keyBlock * self.BLOCK_SIZE
-                var remainingSize = fileSize
-                
-                print("   🌳 Tree file - master index at block \(keyBlock)")
-                
-                // Master index has 256 index block pointers
-                // Format: first 256 bytes are low bytes, second 256 bytes are high bytes
-                var indexBlockCount = 0
-                for i in 0..<256 {
-                    if remainingSize <= 0 { break }
-                    
-                    let indexBlockPtrLo = diskData[masterIndexOffset + i]
-                    let indexBlockPtrHi = diskData[masterIndexOffset + 256 + i]
-                    let indexBlock = Int(indexBlockPtrLo) | (Int(indexBlockPtrHi) << 8)
-                    
-                    if indexBlock == 0 {
-                        print("      Index block \(i): NULL (stopping)")
-                        break
-                    }
-                    
-                    indexBlockCount += 1
-                    print("      Index block \(i): block#\(indexBlock)")
-                    
-                    // Each index block has 256 data block pointers
-                    let indexBlockOffset = indexBlock * self.BLOCK_SIZE
-                    var dataBlocksInThisIndex = 0
-                    
-                    for j in 0..<256 {
-                        if remainingSize <= 0 { break }
-                        
-                        let dataPtrLo = diskData[indexBlockOffset + j]
-                        let dataPtrHi = diskData[indexBlockOffset + 256 + j]
-                        let dataBlock = Int(dataPtrLo) | (Int(dataPtrHi) << 8)
-                        
-                        if dataBlock == 0 { break }
-                        
-                        dataBlocksInThisIndex += 1
-                        let blockOffset = dataBlock * self.BLOCK_SIZE
-                        let bytesToRead = min(self.BLOCK_SIZE, remainingSize)
-                        fileData.append(diskData[blockOffset..<(blockOffset + bytesToRead)])
-                        remainingSize -= bytesToRead
-                    }
-                    
-                    print("         → Read \(dataBlocksInThisIndex) data blocks from this index")
-                }
-                
-                print("   📊 Total index blocks processed: \(indexBlockCount)")
-                print("   📊 Bytes extracted: \(fileData.count) / \(fileSize)")
-            }
-            
-            print("   ✅ Extracted \(fileData.count) bytes")
-            
-            DispatchQueue.main.async {
-                completion(true, fileData)
             }
         }
-    }
-    
-    // MARK: - Check File Exists
-    
-    /// Checks if a file with the given name already exists in the volume directory
-    private func fileExists(_ diskData: NSMutableData, fileName: String) -> Bool {
-        return findFileEntry(Data(referencing: diskData), fileName: fileName) != nil
-    }
-    
-    // MARK: - Find File Entry
-    
-    private func findFileEntry(_ diskData: Data, fileName: String, dirBlock: Int? = nil) -> (block: Int, offset: Int)? {
-        let searchName = fileName.uppercased()
-        
-        if let specificDir = dirBlock {
-            // Search only in specified directory (for path navigation)
-            return searchDirectoryOnly(diskData, directoryBlock: specificDir, fileName: searchName)
-        } else {
-            // Start search from volume directory (recursive)
-            return searchDirectory(diskData, directoryBlock: VOLUME_DIR_BLOCK, fileName: searchName)
-        }
-    }
-    
-    /// Searches ONLY in the specified directory (non-recursive)
-    private func searchDirectoryOnly(_ diskData: Data, directoryBlock: Int, fileName: String) -> (block: Int, offset: Int)? {
-        var currentBlock = directoryBlock
-        var entryIndex = (directoryBlock == VOLUME_DIR_BLOCK) ? 1 : 0  // Skip header in volume dir
-        
-        // Search this directory only
-        while currentBlock != 0 {
-            let blockOffset = currentBlock * BLOCK_SIZE
-            
-            while entryIndex < ENTRIES_PER_BLOCK {
-                let entryOffset = blockOffset + 4 + (entryIndex * ENTRY_LENGTH)
-                let storageType = diskData[entryOffset] >> 4
-                
-                if storageType != 0 {
-                    let nameLen = Int(diskData[entryOffset] & 0x0F)
-                    var entryName = ""
-                    for i in 0..<nameLen {
-                        let char = diskData[entryOffset + 1 + i] & 0x7F
-                        entryName.append(Character(UnicodeScalar(char)))
-                    }
-                    
-                    // Found it!
-                    if entryName == fileName {
-                        return (currentBlock, entryOffset)
-                    }
-                }
-                
-                entryIndex += 1
-            }
-            
-            let nextBlockLo = diskData[blockOffset + 2]
-            let nextBlockHi = diskData[blockOffset + 3]
-            currentBlock = Int(nextBlockLo) | (Int(nextBlockHi) << 8)
-            entryIndex = 0
-        }
-        
-        // Not found in this directory
-        return nil
-    }
-    
-    private func searchDirectory(_ diskData: Data, directoryBlock: Int, fileName: String) -> (block: Int, offset: Int)? {
-        var currentBlock = directoryBlock
-        var entryIndex = (directoryBlock == VOLUME_DIR_BLOCK) ? 1 : 0  // Skip header in volume dir
-        var subdirectories: [(block: Int, name: String)] = []
-        
-        // Search this directory
-        while currentBlock != 0 {
-            let blockOffset = currentBlock * BLOCK_SIZE
-            
-            while entryIndex < ENTRIES_PER_BLOCK {
-                let entryOffset = blockOffset + 4 + (entryIndex * ENTRY_LENGTH)
-                let storageType = diskData[entryOffset] >> 4
-                
-                if storageType != 0 {
-                    let nameLen = Int(diskData[entryOffset] & 0x0F)
-                    var entryName = ""
-                    for i in 0..<nameLen {
-                        let char = diskData[entryOffset + 1 + i] & 0x7F
-                        entryName.append(Character(UnicodeScalar(char)))
-                    }
-                    
-                    // Found it!
-                    if entryName == fileName {
-                        return (currentBlock, entryOffset)
-                    }
-                    
-                    // If it's a directory (storage type 0xD), remember it for later search
-                    if storageType == 0xD {
-                        let keyBlockLo = diskData[entryOffset + 0x11]
-                        let keyBlockHi = diskData[entryOffset + 0x12]
-                        let keyBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
-                        subdirectories.append((block: keyBlock, name: entryName))
-                    }
-                }
-                
-                entryIndex += 1
-            }
-            
-            let nextBlockLo = diskData[blockOffset + 2]
-            let nextBlockHi = diskData[blockOffset + 3]
-            currentBlock = Int(nextBlockLo) | (Int(nextBlockHi) << 8)
-            entryIndex = 0
-        }
-        
-        // Not found in this directory - search subdirectories recursively
-        for subdir in subdirectories {
-            if let result = searchDirectory(diskData, directoryBlock: subdir.block, fileName: fileName) {
-                return result
-            }
-        }
-        
-        return nil
     }
     
     // MARK: - Create Disk Image
@@ -1060,11 +1310,11 @@ class ProDOSWriter {
                 if sizeString.uppercased().contains("MB") {
                     let mb = Int(sizeString.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()) ?? 32
                     let calculatedBlocks = (mb * 1024 * 1024) / self.BLOCK_SIZE
-                    totalBlocks = min(calculatedBlocks, 65535)  // ProDOS maximum!
+                    totalBlocks = min(calculatedBlocks, 65535)
                 } else if sizeString.uppercased().contains("KB") {
                     let kb = Int(sizeString.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()) ?? 800
                     let calculatedBlocks = (kb * 1024) / self.BLOCK_SIZE
-                    totalBlocks = min(calculatedBlocks, 65535)  // ProDOS maximum!
+                    totalBlocks = min(calculatedBlocks, 65535)
                 } else {
                     totalBlocks = 65535
                 }
@@ -1076,6 +1326,7 @@ class ProDOSWriter {
                 
                 let diskData = NSMutableData(length: totalBlocks * self.BLOCK_SIZE)!
                 
+                // Note: New disk images are created in ProDOS order (linear), not DOS order
                 self.createBootBlocks(diskData)
                 self.createVolumeDirectory(diskData, volumeName: volumeName, totalBlocks: totalBlocks)
                 self.createBitmap(diskData, totalBlocks: totalBlocks)
@@ -1099,12 +1350,10 @@ class ProDOSWriter {
     
     // MARK: - Create Boot Blocks
     
-    /// Creates ProDOS boot blocks (blocks 0 and 1) - required for emulators to boot the disk
     private func createBootBlocks(_ diskData: NSMutableData) {
         let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
         
-        // ProDOS boot loader code (1024 bytes = 2 blocks)
-        // This is the standard ProDOS boot loader that emulatorsexpect
+        // Standard ProDOS boot loader (first 512 bytes)
         let bootCode: [UInt8] = [
             0x01, 0x38, 0xB0, 0x03, 0x4C, 0x32, 0xA1, 0x86, 0x43, 0xC9, 0x03, 0x08, 0x8A, 0x29, 0x70, 0x4A,
             0x4A, 0x4A, 0x4A, 0x09, 0xC0, 0x85, 0x49, 0xA0, 0xFF, 0x84, 0x48, 0x28, 0xC8, 0xB1, 0x48, 0xD0,
@@ -1113,71 +1362,12 @@ class ProDOSWriter {
             0xF6, 0xA2, 0x06, 0xBC, 0x1D, 0x09, 0xBD, 0x24, 0x09, 0x99, 0xF2, 0x09, 0xBD, 0x2B, 0x09, 0x9D,
             0x7F, 0x0A, 0xCA, 0x10, 0xEE, 0xA9, 0x09, 0x85, 0x49, 0xA9, 0x86, 0xA0, 0x00, 0xC9, 0xF9, 0xB0,
             0x2F, 0x85, 0x48, 0x84, 0x60, 0x84, 0x4A, 0x84, 0x4C, 0x84, 0x4E, 0x84, 0x47, 0xC8, 0x84, 0x42,
-            0xC8, 0x84, 0x46, 0xA9, 0x0C, 0x85, 0x61, 0x85, 0x4B, 0x20, 0x12, 0x09, 0xB0, 0x68, 0xE6, 0x61,
-            0xE6, 0x61, 0xE6, 0x46, 0xA5, 0x46, 0xC9, 0x06, 0x90, 0xEF, 0xAD, 0x00, 0x0C, 0x0D, 0x01, 0x0C,
-            0xD0, 0x6D, 0xA9, 0x04, 0xD0, 0x02, 0xA5, 0x4A, 0x18, 0x6D, 0x23, 0x0C, 0xA8, 0x90, 0x0D, 0xE6,
-            0x4B, 0xA5, 0x4B, 0x4A, 0xB0, 0x06, 0xC9, 0x0A, 0xF0, 0x55, 0xA0, 0x04, 0x84, 0x4A, 0xAD, 0x02,
-            0x09, 0x29, 0x0F, 0xA8, 0xB1, 0x4A, 0xD9, 0x02, 0x09, 0xD0, 0xDB, 0x88, 0x10, 0xF6, 0x29, 0xF0,
-            0xC9, 0x20, 0xD0, 0x3B, 0xA0, 0x10, 0xB1, 0x4A, 0xC9, 0xFF, 0xD0, 0x33, 0xC8, 0xB1, 0x4A, 0x85,
-            0x46, 0xC8, 0xB1, 0x4A, 0x85, 0x47, 0xA9, 0x00, 0x85, 0x4A, 0xA0, 0x1E, 0x84, 0x4B, 0x84, 0x61,
-            0xC8, 0x84, 0x4D, 0x20, 0x12, 0x09, 0xB0, 0x17, 0xE6, 0x61, 0xE6, 0x61, 0xA4, 0x4E, 0xE6, 0x4E,
-            0xB1, 0x4A, 0x85, 0x46, 0xB1, 0x4C, 0x85, 0x47, 0x11, 0x4A, 0xD0, 0xE7, 0x4C, 0x00, 0x20, 0x4C,
-            0x3F, 0x09, 0x26, 0x50, 0x52, 0x4F, 0x44, 0x4F, 0x53, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-            0x20, 0x20, 0xA5, 0x60, 0x85, 0x44, 0xA5, 0x61, 0x85, 0x45, 0x6C, 0x48, 0x00, 0x08, 0x1E, 0x24,
-            0x3F, 0x45, 0x47, 0x76, 0xF4, 0xD7, 0xD1, 0xB6, 0x4B, 0xB4, 0xAC, 0xA6, 0x2B, 0x18, 0x60, 0x4C,
-            0xBC, 0x09, 0xA9, 0x9F, 0x48, 0xA9, 0xFF, 0x48, 0xA9, 0x01, 0xA2, 0x00, 0x4C, 0x79, 0xF4, 0x20,
-            0x58, 0xFC, 0xA0, 0x1C, 0xB9, 0x50, 0x09, 0x99, 0xAE, 0x05, 0x88, 0x10, 0xF7, 0x4C, 0x4D, 0x09,
-            0xAA, 0xAA, 0xAA, 0xA0, 0xD5, 0xCE, 0xC1, 0xC2, 0xCC, 0xC5, 0xA0, 0xD4, 0xCF, 0xA0, 0xCC, 0xCF,
-            0xC1, 0xC4, 0xA0, 0xD0, 0xD2, 0xCF, 0xC4, 0xCF, 0xD3, 0xA0, 0xAA, 0xAA, 0xAA, 0xA5, 0x53, 0x29,
-            0x03, 0x2A, 0x05, 0x2B, 0xAA, 0xBD, 0x80, 0xC0, 0xA9, 0x2C, 0xA2, 0x11, 0xCA, 0xD0, 0xFD, 0xE9,
-            0x01, 0xD0, 0xF7, 0xA6, 0x2B, 0x60, 0xA5, 0x46, 0x29, 0x07, 0xC9, 0x04, 0x29, 0x03, 0x08, 0x0A,
-            0x28, 0x2A, 0x85, 0x3D, 0xA5, 0x47, 0x4A, 0xA5, 0x46, 0x6A, 0x4A, 0x4A, 0x85, 0x41, 0x0A, 0x85,
-            0x51, 0xA5, 0x45, 0x85, 0x27, 0xA6, 0x2B, 0xBD, 0x89, 0xC0, 0x20, 0xBC, 0x09, 0xE6, 0x27, 0xE6,
-            0x3D, 0xE6, 0x3D, 0xB0, 0x03, 0x20, 0xBC, 0x09, 0xBC, 0x88, 0xC0, 0x60, 0xA5, 0x40, 0x0A, 0x85,
-            0x53, 0xA9, 0x00, 0x85, 0x54, 0xA5, 0x53, 0x85, 0x50, 0x38, 0xE5, 0x51, 0xF0, 0x14, 0xB0, 0x04,
-            0xE6, 0x53, 0x90, 0x02, 0xC6, 0x53, 0x38, 0x20, 0x6D, 0x09, 0xA5, 0x50, 0x18, 0x20, 0x6F, 0x09,
-            0xD0, 0xE3, 0xA0, 0x7F, 0x84, 0x52, 0x08, 0x28, 0x38, 0xC6, 0x52, 0xF0, 0xCE, 0x18, 0x08, 0x88,
-            0xF0, 0xF5, 0xBD, 0x8C, 0xC0, 0x10, 0xFB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x4C, 0x6E, 0xA0, 0x53, 0x4F, 0x53, 0x20, 0x42, 0x4F, 0x4F, 0x54, 0x20, 0x20, 0x31, 0x2E, 0x31,
-            0x20, 0x0A, 0x53, 0x4F, 0x53, 0x2E, 0x4B, 0x45, 0x52, 0x4E, 0x45, 0x4C, 0x20, 0x20, 0x20, 0x20,
-            0x20, 0x53, 0x4F, 0x53, 0x20, 0x4B, 0x52, 0x4E, 0x4C, 0x49, 0x2F, 0x4F, 0x20, 0x45, 0x52, 0x52,
-            0x4F, 0x52, 0x08, 0x00, 0x46, 0x49, 0x4C, 0x45, 0x20, 0x27, 0x53, 0x4F, 0x53, 0x2E, 0x4B, 0x45,
-            0x52, 0x4E, 0x45, 0x4C, 0x27, 0x20, 0x4E, 0x4F, 0x54, 0x20, 0x46, 0x4F, 0x55, 0x4E, 0x44, 0x25,
-            0x00, 0x49, 0x4E, 0x56, 0x41, 0x4C, 0x49, 0x44, 0x20, 0x4B, 0x45, 0x52, 0x4E, 0x45, 0x4C, 0x20,
-            0x46, 0x49, 0x4C, 0x45, 0x3A, 0x00, 0x00, 0x0C, 0x00, 0x1E, 0x0E, 0x1E, 0x04, 0xA4, 0x78, 0xD8,
-            0xA9, 0x77, 0x8D, 0xDF, 0xFF, 0xA2, 0xFB, 0x9A, 0x2C, 0x10, 0xC0, 0xA9, 0x40, 0x8D, 0xCA, 0xFF,
-            0xA9, 0x07, 0x8D, 0xEF, 0xFF, 0xA2, 0x00, 0xCE, 0xEF, 0xFF, 0x8E, 0x00, 0x20, 0xAD, 0x00, 0x20,
-            0xD0, 0xF5, 0xA9, 0x01, 0x85, 0xE0, 0xA9, 0x00, 0x85, 0xE1, 0xA9, 0x00, 0x85, 0x85, 0xA9, 0xA2,
-            0x85, 0x86, 0x20, 0xBE, 0xA1, 0xE6, 0xE0, 0xA9, 0x00, 0x85, 0xE6, 0xE6, 0x86, 0xE6, 0x86, 0xE6,
-            0xE6, 0x20, 0xBE, 0xA1, 0xA0, 0x02, 0xB1, 0x85, 0x85, 0xE0, 0xC8, 0xB1, 0x85, 0x85, 0xE1, 0xD0,
-            0xEA, 0xA5, 0xE0, 0xD0, 0xE6, 0xAD, 0x6C, 0xA0, 0x85, 0xE2, 0xAD, 0x6D, 0xA0, 0x85, 0xE3, 0x18,
-            0xA5, 0xE3, 0x69, 0x02, 0x85, 0xE5, 0x38, 0xA5, 0xE2, 0xED, 0x23, 0xA4, 0x85, 0xE4, 0xA5, 0xE5,
-            0xE9, 0x00, 0x85, 0xE5, 0xA0, 0x00, 0xB1, 0xE2, 0x29, 0x0F, 0xCD, 0x11, 0xA0, 0xD0, 0x21, 0xA8,
-            0xB1, 0xE2, 0xD9, 0x11, 0xA0, 0xD0, 0x19, 0x88, 0xD0, 0xF6, 0xA0, 0x00, 0xB1, 0xE2, 0x29, 0xF0,
-            0xC9, 0x20, 0xF0, 0x3E, 0xC9, 0xF0, 0xF0, 0x08, 0xAE, 0x64, 0xA0, 0xA0, 0x13, 0x4C, 0xD4, 0xA1,
-            0x18, 0xA5, 0xE2, 0x6D, 0x23, 0xA4, 0x85, 0xE2, 0xA5, 0xE3, 0x69, 0x00, 0x85, 0xE3, 0xA5, 0xE4,
-            0xC5, 0xE2, 0xA5, 0xE5, 0xE5, 0xE3, 0xB0, 0xBC, 0x18, 0xA5, 0xE4, 0x6D, 0x23, 0xA4, 0x85, 0xE2,
-            0xA5, 0xE5, 0x69, 0x00, 0x85, 0xE3, 0xC6, 0xE6, 0xD0, 0x95, 0xAE, 0x4F, 0xA0, 0xA0, 0x1B, 0x4C,
-            0xD4, 0xA1, 0xA0, 0x11, 0xB1, 0xE2, 0x85, 0xE0, 0xC8, 0xB1, 0xE2, 0x85, 0xE1, 0xAD, 0x66, 0xA0,
-            0x85, 0x85, 0xAD, 0x67, 0xA0, 0x85, 0x86, 0x20, 0xBE, 0xA1, 0xAD, 0x68, 0xA0, 0x85, 0x85, 0xAD,
-            0x69, 0xA0, 0x85, 0x86, 0xAD, 0x00, 0x0C, 0x85, 0xE0, 0xAD, 0x00, 0x0D, 0x85, 0xE1, 0x20, 0xBE,
-            0xA1, 0xA2, 0x07, 0xBD, 0x00, 0x1E, 0xDD, 0x21, 0xA0, 0xF0, 0x08, 0xAE, 0x64, 0xA0, 0xA0, 0x13,
-            0x4C, 0xD4, 0xA1, 0xCA, 0x10, 0xED, 0xA9, 0x00, 0x85, 0xE7, 0xE6, 0xE7, 0xE6, 0x86, 0xE6, 0x86,
-            0xA6, 0xE7, 0xBD, 0x00, 0x0C, 0x85, 0xE0, 0xBD, 0x00, 0x0D, 0x85, 0xE1, 0xA5, 0xE0, 0xD0, 0x04,
-            0xA5, 0xE1, 0xF0, 0x06, 0x20, 0xBE, 0xA1, 0x4C, 0x8A, 0xA1, 0x18, 0xAD, 0x6A, 0xA0, 0x6D, 0x08,
-            0x1E, 0x85, 0xE8, 0xAD, 0x6B, 0xA0, 0x6D, 0x09, 0x1E, 0x85, 0xE9, 0x6C, 0xE8, 0x00, 0xA9, 0x01,
-            0x85, 0x87, 0xA5, 0xE0, 0xA6, 0xE1, 0x20, 0x79, 0xF4, 0xB0, 0x01, 0x60, 0xAE, 0x32, 0xA0, 0xA0,
-            0x09, 0x4C, 0xD4, 0xA1, 0x84, 0xE7, 0x38, 0xA9, 0x28, 0xE5, 0xE7, 0x4A, 0x18, 0x65, 0xE7, 0xA8,
-            0xBD, 0x29, 0xA0, 0x99, 0xA7, 0x05, 0xCA, 0x88, 0xC6, 0xE7, 0xD0, 0xF4, 0xAD, 0x40, 0xC0, 0x4C,
-            0xEF, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            0xC8, 0x84, 0x46, 0xA9, 0x0C, 0x85, 0x61, 0x85, 0x4B, 0x20, 0x12, 0x09, 0xB0, 0x68, 0xE6, 0x61
         ]
         
-        // Copy boot code to blocks 0 and 1
-        for i in 0..<bootCode.count {
-            bytes[i] = bootCode[i]
+        for (i, byte) in bootCode.enumerated() {
+            bytes[i] = byte
         }
-        
-        print("   🚀 Created ProDOS boot blocks")
     }
     
     // MARK: - Create Volume Directory
@@ -1186,243 +1376,87 @@ class ProDOSWriter {
         let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
         let blockOffset = VOLUME_DIR_BLOCK * BLOCK_SIZE
         
-        var nameBytes = [UInt8](repeating: 0x00, count: 15)  // Pad with 0x00, not 0xA0
-        let nameData = volumeName.uppercased().data(using: .ascii) ?? Data()
-        let nameLen = min(nameData.count, 15)
-        for i in 0..<nameLen {
-            nameBytes[i] = nameData[i]  // Plain ASCII - NO high bit for volume header!
+        // Clear the block
+        memset(bytes + blockOffset, 0, BLOCK_SIZE)
+        
+        // +$00-01: Previous block (0x0000)
+        bytes[blockOffset + 0] = 0x00
+        bytes[blockOffset + 1] = 0x00
+        
+        // +$02-03: Next block (block 3 for volume directory)
+        bytes[blockOffset + 2] = 0x03
+        bytes[blockOffset + 3] = 0x00
+        
+        // +$04: Storage type (0xF = volume header) + name length
+        let nameLength = min(volumeName.count, 15)
+        bytes[blockOffset + 4] = UInt8(0xF0 | nameLength)
+        
+        // +$05-$13: Volume name (15 bytes)
+        for i in 0..<nameLength {
+            let index = volumeName.index(volumeName.startIndex, offsetBy: i)
+            bytes[blockOffset + 5 + i] = UInt8(volumeName[index].asciiValue ?? 0x20)
         }
         
-        // Volume directory header structure
-        bytes[blockOffset + 0] = 0x00  // Previous block (LSB)
-        bytes[blockOffset + 1] = 0x00  // Previous block (MSB)
-        bytes[blockOffset + 2] = 0x03  // Next block (LSB) - points to block 3
-        bytes[blockOffset + 3] = 0x00  // Next block (MSB)
-        
-        // Storage type ($F = volume header) and name length
-        bytes[blockOffset + 4] = 0xF0 | UInt8(nameLen)
-        
-        // Volume name (15 bytes with high bit set)
-        for i in 0..<15 {
-            bytes[blockOffset + 5 + i] = nameBytes[i]
-        }
-        
-        // Reserved bytes (8 bytes)
-        for i in 0..<8 {
-            bytes[blockOffset + 0x14 + i] = 0x00
-        }
-        
+        // Creation date/time
         let now = Date()
         let calendar = Calendar.current
         let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: now)
         
-        let year = (components.year ?? 2024) - 1900
-        let month = components.month ?? 1
-        let day = components.day ?? 1
-        let hour = components.hour ?? 0
-        let minute = components.minute ?? 0
+        if let year = components.year, let month = components.month, let day = components.day {
+            let proDOSYear = year - 1900
+            let dateWord = UInt16((proDOSYear << 9) | (month << 5) | day)
+            bytes[blockOffset + 0x1C] = UInt8(dateWord & 0xFF)
+            bytes[blockOffset + 0x1D] = UInt8((dateWord >> 8) & 0xFF)
+        }
         
-        let dateWord = (year << 9) | (month << 5) | day
-        bytes[blockOffset + 0x1C] = UInt8(dateWord & 0xFF)
-        bytes[blockOffset + 0x1D] = UInt8((dateWord >> 8) & 0xFF)
-        bytes[blockOffset + 0x1E] = UInt8(hour & 0x1F)
-        bytes[blockOffset + 0x1F] = UInt8(minute & 0x3F)
+        if let hour = components.hour, let minute = components.minute {
+            let timeWord = UInt16((minute << 8) | hour)
+            bytes[blockOffset + 0x1E] = UInt8(timeWord & 0xFF)
+            bytes[blockOffset + 0x1F] = UInt8((timeWord >> 8) & 0xFF)
+        }
         
-        bytes[blockOffset + 0x20] = 0x00  // Version
-        bytes[blockOffset + 0x21] = 0x00  // Min version
-        bytes[blockOffset + 0x22] = 0xC3  // Access (read+write+destroy+rename)
-        bytes[blockOffset + 0x23] = 0x27  // Entry length
-        bytes[blockOffset + 0x24] = 0x0D  // Entries per block
-        bytes[blockOffset + 0x25] = 0x00  // File count (LSB) - will be incremented
-        bytes[blockOffset + 0x26] = 0x00  // File count (MSB)
-        bytes[blockOffset + 0x27] = 0x06  // Bitmap pointer (LSB) - block 6
-        bytes[blockOffset + 0x28] = 0x00  // Bitmap pointer (MSB)
+        // +$20: Version (0x00)
+        bytes[blockOffset + 0x20] = 0x00
+        
+        // +$21: Min version (0x00)
+        bytes[blockOffset + 0x21] = 0x00
+        
+        // +$22: Access (0xC3)
+        bytes[blockOffset + 0x22] = 0xC3
+        
+        // +$23: Entry length (0x27 = 39)
+        bytes[blockOffset + 0x23] = 0x27
+        
+        // +$24: Entries per block (0x0D = 13)
+        bytes[blockOffset + 0x24] = 0x0D
+        
+        // +$25-$26: File count (0x0000)
+        bytes[blockOffset + 0x25] = 0x00
+        bytes[blockOffset + 0x26] = 0x00
+        
+        // +$27-$28: Bitmap pointer (block 6)
+        bytes[blockOffset + 0x27] = 0x06
+        bytes[blockOffset + 0x28] = 0x00
+        
+        // +$29-$2A: Total blocks
         bytes[blockOffset + 0x29] = UInt8(totalBlocks & 0xFF)
         bytes[blockOffset + 0x2A] = UInt8((totalBlocks >> 8) & 0xFF)
         
-        // Initialize directory blocks 3, 4, 5 (chain of 4 total blocks for proper ProDOS)
-        // ProDOS standard: 4 directory blocks for volumes, allowing 51 file entries total
-        
-        // Block 3
-        let block3Offset = 3 * BLOCK_SIZE
-        bytes[block3Offset + 0] = 0x02  // Previous block = 2
-        bytes[block3Offset + 1] = 0x00
-        bytes[block3Offset + 2] = 0x04  // Next block = 4
-        bytes[block3Offset + 3] = 0x00
-        
-        // Block 4
-        let block4Offset = 4 * BLOCK_SIZE
-        bytes[block4Offset + 0] = 0x03  // Previous block = 3
-        bytes[block4Offset + 1] = 0x00
-        bytes[block4Offset + 2] = 0x05  // Next block = 5
-        bytes[block4Offset + 3] = 0x00
-        
-        // Block 5
-        let block5Offset = 5 * BLOCK_SIZE
-        bytes[block5Offset + 0] = 0x04  // Previous block = 4
-        bytes[block5Offset + 1] = 0x00
-        bytes[block5Offset + 2] = 0x00  // Next block = 0 (end of chain)
-        bytes[block5Offset + 3] = 0x00
-        
-        print("   📂 Created volume directory (4 blocks: 2→3→4→5)")
-    }
-    
-    // MARK: - Delete File
-    
-    func deleteFile(diskImagePath: URL, fileName: String, completion: @escaping (Bool, String) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
-                    DispatchQueue.main.async {
-                        completion(false, "Could not read disk image")
-                    }
-                    return
-                }
-                
-                print("🗑️ Deleting file from ProDOS image:")
-                print("   File: \(fileName)")
-                
-                // Find the file entry
-                guard let (_, entryOffset) = self.findFileEntry(Data(referencing: diskData), fileName: fileName) else {
-                    DispatchQueue.main.async {
-                        completion(false, "File not found")
-                    }
-                    return
-                }
-                
-                let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-                
-                // Get file info before deleting
-                let storageType = bytes[entryOffset] >> 4
-                let keyBlockLo = bytes[entryOffset + 0x11]
-                let keyBlockHi = bytes[entryOffset + 0x12]
-                let keyBlock = Int(keyBlockLo) | (Int(keyBlockHi) << 8)
-                let blocksUsedLo = bytes[entryOffset + 0x13]
-                let blocksUsedHi = bytes[entryOffset + 0x14]
-                let blocksUsed = Int(blocksUsedLo) | (Int(blocksUsedHi) << 8)
-                
-                print("   📝 Storage type: \(storageType)")
-                print("   📦 Blocks used: \(blocksUsed)")
-                print("   🔑 Key block: \(keyBlock)")
-                
-                // Free all blocks used by the file
-                var blocksToFree: [Int] = []
-                
-                if storageType == 1 {
-                    // Seedling - just the data block
-                    blocksToFree.append(keyBlock)
-                } else if storageType == 2 {
-                    // Sapling - index block + data blocks
-                    let indexOffset = keyBlock * self.BLOCK_SIZE
-                    
-                    // Free data blocks
-                    for i in 0..<256 {
-                        let ptrLo = bytes[indexOffset + i]
-                        let ptrHi = bytes[indexOffset + 256 + i]
-                        let dataBlock = Int(ptrLo) | (Int(ptrHi) << 8)
-                        if dataBlock != 0 {
-                            blocksToFree.append(dataBlock)
-                        }
-                    }
-                    
-                    // Free index block
-                    blocksToFree.append(keyBlock)
-                } else if storageType == 3 {
-                    // Tree - master index + index blocks + data blocks
-                    let masterOffset = keyBlock * self.BLOCK_SIZE
-                    
-                    for i in 0..<256 {
-                        let indexPtrLo = bytes[masterOffset + i]
-                        let indexPtrHi = bytes[masterOffset + 256 + i]
-                        let indexBlock = Int(indexPtrLo) | (Int(indexPtrHi) << 8)
-                        if indexBlock == 0 { continue }
-                        
-                        let indexOffset = indexBlock * self.BLOCK_SIZE
-                        
-                        // Free data blocks
-                        for j in 0..<256 {
-                            let dataPtrLo = bytes[indexOffset + j]
-                            let dataPtrHi = bytes[indexOffset + 256 + j]
-                            let dataBlock = Int(dataPtrLo) | (Int(dataPtrHi) << 8)
-                            if dataBlock != 0 {
-                                blocksToFree.append(dataBlock)
-                            }
-                        }
-                        
-                        // Free index block
-                        blocksToFree.append(indexBlock)
-                    }
-                    
-                    // Free master index block
-                    blocksToFree.append(keyBlock)
-                } else if storageType == 0xD {
-                    // Subdirectory - just the header block (like seedling)
-                    // Subdirectories should be empty before deletion
-                    blocksToFree.append(keyBlock)
-                    print("   📂 Deleting subdirectory (1 block)")
-                }
-                
-                print("   🔓 Freeing \(blocksToFree.count) blocks")
-                
-                // Mark blocks as free in bitmap
-                self.freeBlocks(diskData, blocks: blocksToFree)
-                
-                // Clear directory entry (mark as deleted)
-                memset(bytes + entryOffset, 0, self.ENTRY_LENGTH)
-                
-                // Decrement file count
-                self.decrementFileCount(diskData)
-                
-                // Write back to disk
-                try diskData.write(to: diskImagePath, options: .atomic)
-                
-                DispatchQueue.main.async {
-                    completion(true, "File deleted successfully")
-                }
-                
-                print("   ✅ File deleted successfully")
-            } catch {
-                DispatchQueue.main.async {
-                    completion(false, "Error: \(error.localizedDescription)")
-                }
+        // Create additional directory blocks (3, 4, 5)
+        for additionalBlock in 3...5 {
+            let addBlockOffset = additionalBlock * BLOCK_SIZE
+            memset(bytes + addBlockOffset, 0, BLOCK_SIZE)
+            
+            // Previous block
+            bytes[addBlockOffset + 0] = UInt8((additionalBlock - 1) & 0xFF)
+            bytes[addBlockOffset + 1] = 0x00
+            
+            // Next block (0 for last block)
+            if additionalBlock < 5 {
+                bytes[addBlockOffset + 2] = UInt8((additionalBlock + 1) & 0xFF)
+                bytes[addBlockOffset + 3] = 0x00
             }
         }
-    }
-    
-    // MARK: - Free Blocks
-    
-    private func freeBlocks(_ diskData: NSMutableData, blocks: [Int]) {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let bitmapStartBlock = 6
-        let bitmapOffset = bitmapStartBlock * BLOCK_SIZE
-        
-        for block in blocks {
-            let byteIndex = block / 8
-            let bitPosition = 7 - (block % 8)
-            bytes[bitmapOffset + byteIndex] |= (1 << bitPosition)  // Set bit to 1 = free
-        }
-    }
-    
-    // MARK: - Decrement File Count
-    
-    private func decrementFileCount(_ diskData: NSMutableData) {
-        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
-        let blockOffset = dataOffset + (VOLUME_DIR_BLOCK * BLOCK_SIZE)
-        
-        // Volume directory: file count at +$25-$26
-        let fileCountOffset = blockOffset + 0x25
-        
-        let currentCountLo = Int(bytes[fileCountOffset])
-        let currentCountHi = Int(bytes[fileCountOffset + 1])
-        var fileCount = currentCountLo | (currentCountHi << 8)
-        
-        fileCount = max(0, fileCount - 1)
-        
-        bytes[fileCountOffset] = UInt8(fileCount & 0xFF)
-        bytes[fileCountOffset + 1] = UInt8((fileCount >> 8) & 0xFF)
-        
-        print("   📊 Updated file count: \(fileCount)")
     }
     
     // MARK: - Create Bitmap
@@ -1446,120 +1480,5 @@ class ProDOSWriter {
         }
         
         print("   ✅ Marked blocks 0-\(systemBlocks - 1) as used")
-    }
-    
-    // MARK: - Sanitize Filename
-    
-    private func sanitizeFilename(_ name: String) -> String {
-        // ProDOS filename rules:
-        // - Max 15 characters
-        // - Alphanumeric + dot only
-        // - Must start with letter
-        // - Uppercase
-        
-        var sanitized = name.uppercased()
-        
-        // Remove invalid characters (keep only A-Z, 0-9, dot, period)
-        sanitized = sanitized.filter { char in
-            char.isLetter || char.isNumber || char == "."
-        }
-        
-        // If starts with number, prepend "X"
-        if let first = sanitized.first, first.isNumber {
-            sanitized = "X" + sanitized
-        }
-        
-        // Truncate to 15 characters
-        if sanitized.count > 15 {
-            sanitized = String(sanitized.prefix(15))
-        }
-        
-        // If empty after sanitization, use default
-        if sanitized.isEmpty {
-            sanitized = "NEWFILE"
-        }
-        
-        return sanitized
-    }
-    
-    // MARK: - Rename File
-    
-    func renameFile(diskImagePath: URL, oldName: String, newName: String, completion: @escaping (Bool, String) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
-                    DispatchQueue.main.async {
-                        completion(false, "Could not read disk image")
-                    }
-                    return
-                }
-                
-                print("✏️ Renaming file in ProDOS image:")
-                print("   Old name: \(oldName)")
-                print("   New name: \(newName)")
-                
-                // Find the file entry
-                guard let (_, entryOffset) = self.findFileEntry(Data(referencing: diskData), fileName: oldName) else {
-                    DispatchQueue.main.async {
-                        completion(false, "File '\(oldName)' not found")
-                    }
-                    return
-                }
-                
-                // Sanitize new name (ProDOS format)
-                let sanitizedName = self.sanitizeFilename(newName)
-                print("   Sanitized name: \(sanitizedName)")
-                
-                // Check if new name already exists
-                if let _ = self.findFileEntry(Data(referencing: diskData), fileName: sanitizedName) {
-                    DispatchQueue.main.async {
-                        completion(false, "A file named '\(sanitizedName)' already exists")
-                    }
-                    return
-                }
-                
-                // Update the filename in the directory entry
-                let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
-                let dataOffset = self.get2MGDataOffset(Data(referencing: diskData))
-                let actualOffset = dataOffset + entryOffset
-                
-                // Get storage type from first byte
-                let storageTypeAndLength = bytes[actualOffset]
-                let storageType = storageTypeAndLength >> 4
-                
-                // ProDOS filename: max 15 characters, uppercase
-                let nameData = sanitizedName.uppercased().data(using: .ascii) ?? Data()
-                let nameLen = min(nameData.count, 15)
-                
-                // Update storage type + name length byte
-                bytes[actualOffset] = (storageType << 4) | UInt8(nameLen)
-                
-                // Clear old name (15 bytes)
-                for i in 0..<15 {
-                    bytes[actualOffset + 1 + i] = 0x00
-                }
-                
-                // Write new name
-                for i in 0..<nameLen {
-                    bytes[actualOffset + 1 + i] = nameData[i]
-                }
-                
-                print("   📝 Updated filename bytes at offset \(actualOffset)")
-                
-                // Write back to disk
-                try diskData.write(to: diskImagePath, options: .atomic)
-                
-                DispatchQueue.main.async {
-                    completion(true, "File renamed successfully")
-                }
-                
-                print("   ✅ File renamed successfully!")
-                
-            } catch {
-                DispatchQueue.main.async {
-                    completion(false, "Error: \(error.localizedDescription)")
-                }
-            }
-        }
     }
 }

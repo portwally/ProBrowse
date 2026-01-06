@@ -3,6 +3,7 @@
 //  ProBrowse
 //
 //  ViewModel for managing disk pane state and operations
+//  Updated to support both ProDOS and DOS 3.3 filesystems
 //
 
 import SwiftUI
@@ -32,6 +33,11 @@ class DiskPaneViewModel: ObservableObject {
     
     var canGoBack: Bool {
         return !navigationPath.isEmpty
+    }
+    
+    /// Check if the current disk is DOS 3.3 format
+    var isDOS33: Bool {
+        return catalog?.diskFormat.contains("DOS 3.3") ?? false
     }
     
     // MARK: - Load Disk Image
@@ -103,105 +109,6 @@ class DiskPaneViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Find Volume Header in .dsk
-    
-    private struct VolumeHeaderLocation {
-        let offset: Int
-        let track: Int
-        let sector: Int
-    }
-    
-    private func findVolumeHeaderInDSK(_ data: Data) -> VolumeHeaderLocation? {
-        // Scan entire disk for ProDOS Volume Directory Header signature
-        // Looking for: Storage Type 0xF, valid name length, entry_length=0x27, entries_per_block=0x0D
-        
-        let sectorSize = 256
-        
-        // Check every sector as potential start of a 512-byte block
-        for offset in stride(from: 0, to: data.count - 512, by: sectorSize) {
-            let blockData = data[offset..<(offset + 512)]
-            
-            guard offset + 4 < blockData.endIndex else { continue }
-            
-            let storageAndName = blockData[blockData.startIndex + 4]
-            let storageType = (storageAndName & 0xF0) >> 4
-            let nameLength = storageAndName & 0x0F
-            
-            // Check for Volume Directory Header signature
-            if storageType == 0x0F && nameLength >= 1 && nameLength <= 15 {
-                // Verify entry structure
-                guard offset + 0x24 < blockData.endIndex else { continue }
-                
-                let entryLength = blockData[blockData.startIndex + 0x23]
-                let entriesPerBlock = blockData[blockData.startIndex + 0x24]
-                
-                if entryLength == 0x27 && entriesPerBlock == 0x0D {
-                    let track = offset / 4096
-                    let sector = (offset % 4096) / sectorSize
-                    
-                    return VolumeHeaderLocation(offset: offset, track: track, sector: sector)
-                }
-            }
-        }
-        
-        return nil
-    }
-    
-    // MARK: - DOS to ProDOS Sector Order Conversion
-    
-    private func convertDOStoProDOSOrder(_ data: Data) -> Data? {
-        let sectorSize = 256
-        let sectorsPerTrack = 16
-        let tracks = 35
-        let expectedSize = tracks * sectorsPerTrack * sectorSize
-        
-        guard data.count == expectedSize else {
-            print("   ⚠️ File size mismatch: \(data.count) != \(expectedSize)")
-            return nil
-        }
-        
-        // DOS to ProDOS sector mapping
-        // Each ProDOS block consists of 2 DOS sectors in this order
-        let dosToProDOSMap: [Int] = [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15]
-        
-        var converted = Data(count: expectedSize)
-        var destOffset = 0
-        
-        // Process each track
-        for track in 0..<tracks {
-            let trackOffset = track * sectorsPerTrack * sectorSize
-            
-            // Process each block in track (8 blocks per track)
-            for blockInTrack in 0..<8 {
-                // Get the two sector indices for this block
-                let lowerSectorIdx = dosToProDOSMap[blockInTrack * 2]
-                let upperSectorIdx = dosToProDOSMap[blockInTrack * 2 + 1]
-                
-                // Read from DOS order
-                let lowerOffset = trackOffset + (lowerSectorIdx * sectorSize)
-                let upperOffset = trackOffset + (upperSectorIdx * sectorSize)
-                
-                // Write to ProDOS order (linear)
-                converted.replaceSubrange(destOffset..<(destOffset + sectorSize),
-                                        with: data[lowerOffset..<(lowerOffset + sectorSize)])
-                destOffset += sectorSize
-                
-                converted.replaceSubrange(destOffset..<(destOffset + sectorSize),
-                                        with: data[upperOffset..<(upperOffset + sectorSize)])
-                destOffset += sectorSize
-            }
-        }
-        
-        print("   ✅ Conversion complete: \(converted.count) bytes")
-        
-        // Verify Block 2
-        let block2Offset = 2 * 512
-        let storageType = (converted[block2Offset + 4] & 0xF0) >> 4
-        print("   Verification: Block 2 StorageType = 0x\(String(storageType, radix: 16))")
-        
-        return converted
-    }
-    
     // MARK: - Selection
     
     func isSelected(_ entry: DiskCatalogEntry) -> Bool {
@@ -265,24 +172,6 @@ class DiskPaneViewModel: ObservableObject {
             }
         }
         return result
-    }
-    
-    private func selectRecursive(_ entry: DiskCatalogEntry) {
-        selectedEntries.insert(entry.id)
-        if let children = entry.children {
-            for child in children {
-                selectRecursive(child)
-            }
-        }
-    }
-    
-    private func deselectRecursive(_ entry: DiskCatalogEntry) {
-        selectedEntries.remove(entry.id)
-        if let children = entry.children {
-            for child in children {
-                deselectRecursive(child)
-            }
-        }
     }
     
     func toggleSelectAll() {
@@ -362,7 +251,7 @@ class DiskPaneViewModel: ObservableObject {
     // MARK: - Export to Finder
     
     func exportSelectedToFinder() {
-        let entriesToExport = getSelectedEntries()  // Include directories!
+        let entriesToExport = getSelectedEntries()
         
         guard !entriesToExport.isEmpty else { return }
         
@@ -466,23 +355,40 @@ class DiskPaneViewModel: ObservableObject {
             
             print("📋 Importing file: \(filename) (\(fileData.count) bytes)")
             
-            // Use native ProDOS writer to add file
-            // Default to BIN ($06) file type with aux 0x0000
-            ProDOSWriter.shared.addFile(
-                diskImagePath: imagePath,
-                fileName: filename,
-                fileData: fileData,
-                fileType: 0x06,  // BIN
-                auxType: 0x0000
-            ) { success, message in
-                if success {
-                    print("✅ File imported successfully")
-                    // Reload disk image
-                    DispatchQueue.main.async {
-                        self.loadDiskImage(from: imagePath)
+            // Use appropriate writer based on target filesystem
+            if isDOS33 {
+                DOS33Writer.shared.addFile(
+                    diskImagePath: imagePath,
+                    fileName: filename,
+                    fileData: fileData,
+                    fileType: 0x06,  // BIN
+                    auxType: 0x0000
+                ) { success, message in
+                    if success {
+                        print("✅ File imported successfully (DOS 3.3)")
+                        DispatchQueue.main.async {
+                            self.loadDiskImage(from: imagePath)
+                        }
+                    } else {
+                        print("❌ Failed to import: \(message)")
                     }
-                } else {
-                    print("❌ Failed to import: \(message)")
+                }
+            } else {
+                ProDOSWriter.shared.addFile(
+                    diskImagePath: imagePath,
+                    fileName: filename,
+                    fileData: fileData,
+                    fileType: 0x06,  // BIN
+                    auxType: 0x0000
+                ) { success, message in
+                    if success {
+                        print("✅ File imported successfully (ProDOS)")
+                        DispatchQueue.main.async {
+                            self.loadDiskImage(from: imagePath)
+                        }
+                    } else {
+                        print("❌ Failed to import: \(message)")
+                    }
                 }
             }
             
@@ -495,13 +401,15 @@ class DiskPaneViewModel: ObservableObject {
         guard let targetImagePath = diskImagePath,
               let sourceImagePath = sourceVM.diskImagePath else { return }
         
-        print("📋 Copying files using native ProDOS writer...")
+        let targetFormat = isDOS33 ? "DOS 3.3" : "ProDOS"
+        let sourceFormat = sourceVM.isDOS33 ? "DOS 3.3" : "ProDOS"
+        print("📋 Copying files from \(sourceFormat) to \(targetFormat)...")
         
         // Copy files sequentially to avoid race conditions
-        copyNextFile(entries: entries, index: 0, from: sourceImagePath, to: targetImagePath)
+        copyNextFile(entries: entries, index: 0, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceVM.isDOS33)
     }
     
-    private func copyNextFile(entries: [DiskCatalogEntry], index: Int, from sourceImagePath: URL, to targetImagePath: URL) {
+    private func copyNextFile(entries: [DiskCatalogEntry], index: Int, from sourceImagePath: URL, to targetImagePath: URL, sourceIsDOS33: Bool) {
         guard index < entries.count else {
             // All files copied - reload
             print("✅ All files copied, reloading...")
@@ -514,7 +422,22 @@ class DiskPaneViewModel: ObservableObject {
         let entry = entries[index]
         
         if entry.isDirectory {
-            // Create the directory itself first!
+            // DOS 3.3 doesn't support directories
+            if isDOS33 {
+                print("⚠️ Skipping directory '\(entry.name)' - DOS 3.3 doesn't support directories")
+                // Copy children as flat files
+                if let children = entry.children, !children.isEmpty {
+                    // Flatten children into current list
+                    var newEntries = Array(entries.dropFirst(index + 1))
+                    newEntries.insert(contentsOf: children, at: 0)
+                    self.copyNextFile(entries: newEntries, index: 0, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceIsDOS33)
+                } else {
+                    self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceIsDOS33)
+                }
+                return
+            }
+            
+            // ProDOS: Create the directory
             print("📁 Processing directory: \(entry.name)")
             
             ProDOSWriter.shared.createDirectory(diskImagePath: targetImagePath, directoryName: entry.name, parentPath: "/") { success, message in
@@ -527,19 +450,19 @@ class DiskPaneViewModel: ObservableObject {
                         let childPath = "/\(entry.name)/"
                         
                         // Recursively copy all children
-                        self.copyEntriesRecursively(entries: children, to: targetImagePath, parentPath: childPath, index: 0) {
+                        self.copyEntriesRecursively(entries: children, to: targetImagePath, parentPath: childPath, index: 0, sourceIsDOS33: sourceIsDOS33) {
                             // After all children copied, move to next sibling
                             print("   ✅ Finished copying children of \(entry.name)")
-                            self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                            self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceIsDOS33)
                         }
                     } else {
                         // Empty directory, move to next
-                        self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                        self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceIsDOS33)
                     }
                 } else {
                     print("   ❌ Failed to create directory: \(message)")
                     // Skip this directory and move to next
-                    self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+                    self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceIsDOS33)
                 }
             }
             return
@@ -549,33 +472,67 @@ class DiskPaneViewModel: ObservableObject {
         let data = entry.data
         print("✅ Using cached data for \(entry.name) (\(data.count) bytes)")
         
-        // Add to target
-        ProDOSWriter.shared.addFile(
-            diskImagePath: targetImagePath,
-            fileName: entry.name,
-            fileData: data,
-            fileType: entry.fileType,
-            auxType: entry.auxType
-        ) { addSuccess, message in
-            if addSuccess {
-                print("✅ Copied \(entry.name)")
-            } else {
-                print("❌ Failed to add \(entry.name): \(message)")
+        // Determine file type - convert if source and target have different filesystems
+        var fileType = entry.fileType
+        var auxType = entry.auxType
+        
+        if sourceIsDOS33 && !isDOS33 {
+            // Converting DOS 3.3 → ProDOS
+            let converted = DiskImageParser.convertDOS33ToProDOSFileType(entry.fileType)
+            fileType = converted.fileType
+            auxType = converted.auxType
+            print("   📝 FileType conversion: DOS 3.3 $\(String(format: "%02X", entry.fileType)) → ProDOS $\(String(format: "%02X", fileType))")
+        } else if !sourceIsDOS33 && isDOS33 {
+            // Converting ProDOS → DOS 3.3 (handled by DOS33Writer internally)
+            print("   📝 FileType: ProDOS $\(String(format: "%02X", fileType)) (will be converted by DOS33Writer)")
+        }
+        
+        // Choose writer based on target filesystem
+        if isDOS33 {
+            DOS33Writer.shared.addFile(
+                diskImagePath: targetImagePath,
+                fileName: entry.name,
+                fileData: data,
+                fileType: entry.fileType,  // DOS33Writer converts internally
+                auxType: entry.auxType
+            ) { addSuccess, message in
+                if addSuccess {
+                    print("✅ Copied \(entry.name) (DOS 3.3)")
+                } else {
+                    print("❌ Failed to add \(entry.name): \(message)")
+                }
+                
+                // Continue with next file
+                self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceIsDOS33)
             }
-            
-            // Continue with next file
-            self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath)
+        } else {
+            ProDOSWriter.shared.addFile(
+                diskImagePath: targetImagePath,
+                fileName: entry.name,
+                fileData: data,
+                fileType: fileType,      // Use converted type
+                auxType: auxType         // Use converted auxType
+            ) { addSuccess, message in
+                if addSuccess {
+                    print("✅ Copied \(entry.name) (ProDOS)")
+                } else {
+                    print("❌ Failed to add \(entry.name): \(message)")
+                }
+                
+                // Continue with next file
+                self.copyNextFile(entries: entries, index: index + 1, from: sourceImagePath, to: targetImagePath, sourceIsDOS33: sourceIsDOS33)
+            }
         }
     }
     
-    // MARK: - Copy Directory Contents (With Structure)
+    // MARK: - Copy Directory Contents (With Structure) - ProDOS Only
     
-    func copyDirectoryContents(_ entries: [DiskCatalogEntry], from sourceImagePath: URL, to targetImagePath: URL, completion: @escaping () -> Void) {
+    func copyDirectoryContents(_ entries: [DiskCatalogEntry], from sourceImagePath: URL, to targetImagePath: URL, sourceIsDOS33: Bool = false, completion: @escaping () -> Void) {
         // Copy directory structure recursively
-        copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: "/", index: 0, completion: completion)
+        copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: "/", index: 0, sourceIsDOS33: sourceIsDOS33, completion: completion)
     }
     
-    private func copyEntriesRecursively(entries: [DiskCatalogEntry], to targetImagePath: URL, parentPath: String, index: Int, completion: @escaping () -> Void) {
+    private func copyEntriesRecursively(entries: [DiskCatalogEntry], to targetImagePath: URL, parentPath: String, index: Int, sourceIsDOS33: Bool, completion: @escaping () -> Void) {
         guard index < entries.count else {
             // All entries copied
             completion()
@@ -585,7 +542,19 @@ class DiskPaneViewModel: ObservableObject {
         let entry = entries[index]
         
         if entry.isDirectory {
-            // Create subdirectory first
+            // DOS 3.3 doesn't support directories - flatten
+            if isDOS33 {
+                if let children = entry.children, !children.isEmpty {
+                    self.copyEntriesRecursively(entries: children, to: targetImagePath, parentPath: parentPath, index: 0, sourceIsDOS33: sourceIsDOS33) {
+                        self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, sourceIsDOS33: sourceIsDOS33, completion: completion)
+                    }
+                } else {
+                    self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, sourceIsDOS33: sourceIsDOS33, completion: completion)
+                }
+                return
+            }
+            
+            // ProDOS: Create subdirectory
             print("📁 Creating subdirectory: \(entry.name)")
             
             ProDOSWriter.shared.createDirectory(diskImagePath: targetImagePath, directoryName: entry.name, parentPath: parentPath) { success, message in
@@ -595,71 +564,68 @@ class DiskPaneViewModel: ObservableObject {
                     // Copy children into this subdirectory
                     if let children = entry.children, !children.isEmpty {
                         let newPath = parentPath + entry.name + "/"
-                        self.copyEntriesRecursively(entries: children, to: targetImagePath, parentPath: newPath, index: 0) {
+                        self.copyEntriesRecursively(entries: children, to: targetImagePath, parentPath: newPath, index: 0, sourceIsDOS33: sourceIsDOS33) {
                             // After children copied, move to next sibling
-                            self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
+                            self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, sourceIsDOS33: sourceIsDOS33, completion: completion)
                         }
                     } else {
-                        // Empty directory, move to next
-                        self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
+                        self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, sourceIsDOS33: sourceIsDOS33, completion: completion)
                     }
                 } else {
                     print("   ❌ Failed to create directory: \(message)")
-                    // Skip this directory and move to next
-                    self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
+                    self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, sourceIsDOS33: sourceIsDOS33, completion: completion)
                 }
             }
         } else {
-            // Copy file to parent directory
-            print("   Copying file: \(entry.name) to \(parentPath)")
+            // Copy file
+            let data = entry.data
+            print("   📄 Copying file: \(entry.name) (\(data.count) bytes)")
             
-            ProDOSWriter.shared.addFile(
-                diskImagePath: targetImagePath,
-                fileName: entry.name,
-                fileData: entry.data,
-                fileType: entry.fileType,
-                auxType: entry.auxType,
-                parentPath: parentPath  // NEW: specify parent directory!
-            ) { addSuccess, message in
-                if addSuccess {
-                    print("   ✅ Copied \(entry.name) to \(parentPath)")
-                } else {
-                    print("   ❌ Failed: \(message)")
+            // Convert file type if needed
+            var fileType = entry.fileType
+            var auxType = entry.auxType
+            
+            if sourceIsDOS33 && !isDOS33 {
+                // Converting DOS 3.3 → ProDOS
+                let converted = DiskImageParser.convertDOS33ToProDOSFileType(entry.fileType)
+                fileType = converted.fileType
+                auxType = converted.auxType
+                print("   📝 FileType: DOS 3.3 $\(String(format: "%02X", entry.fileType)) → ProDOS $\(String(format: "%02X", fileType))")
+            }
+            
+            if isDOS33 {
+                DOS33Writer.shared.addFile(
+                    diskImagePath: targetImagePath,
+                    fileName: entry.name,
+                    fileData: data,
+                    fileType: entry.fileType,  // DOS33Writer converts internally
+                    auxType: entry.auxType,
+                    locked: false
+                ) { success, message in
+                    if success {
+                        print("   ✅ Copied \(entry.name)")
+                    } else {
+                        print("   ❌ Failed: \(message)")
+                    }
+                    self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, sourceIsDOS33: sourceIsDOS33, completion: completion)
                 }
-                
-                // Continue with next entry
-                self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, completion: completion)
-            }
-        }
-    }
-    
-    private func copyNextFileFromList(files: [DiskCatalogEntry], index: Int, from sourceImagePath: URL, to targetImagePath: URL, completion: @escaping () -> Void) {
-        guard index < files.count else {
-            // All files from directory copied
-            completion()
-            return
-        }
-        
-        let entry = files[index]
-        let data = entry.data
-        
-        print("   Copying \(entry.name) from directory...")
-        
-        ProDOSWriter.shared.addFile(
-            diskImagePath: targetImagePath,
-            fileName: entry.name,
-            fileData: data,
-            fileType: entry.fileType,
-            auxType: entry.auxType
-        ) { addSuccess, message in
-            if addSuccess {
-                print("   ✅ Copied \(entry.name)")
             } else {
-                print("   ❌ Failed: \(message)")
+                ProDOSWriter.shared.addFile(
+                    diskImagePath: targetImagePath,
+                    fileName: entry.name,
+                    fileData: data,
+                    fileType: fileType,      // Use converted type
+                    auxType: auxType,        // Use converted auxType
+                    parentPath: parentPath
+                ) { success, message in
+                    if success {
+                        print("   ✅ Copied \(entry.name)")
+                    } else {
+                        print("   ❌ Failed: \(message)")
+                    }
+                    self.copyEntriesRecursively(entries: entries, to: targetImagePath, parentPath: parentPath, index: index + 1, sourceIsDOS33: sourceIsDOS33, completion: completion)
+                }
             }
-            
-            // Continue with next file
-            self.copyNextFileFromList(files: files, index: index + 1, from: sourceImagePath, to: targetImagePath, completion: completion)
         }
     }
     
@@ -693,16 +659,47 @@ class DiskPaneViewModel: ObservableObject {
         
         let entry = entries[index]
         
-        // Delete file or directory
-        ProDOSWriter.shared.deleteFile(diskImagePath: diskImagePath, fileName: entry.name) { success, message in
-            if success {
-                print("✅ Deleted \(entry.name)")
-            } else {
-                print("❌ Failed to delete \(entry.name): \(message)")
-            }
-            
-            // Continue with next file
+        // Strip any display suffixes (like lock icon) from filename
+        var cleanName = entry.name
+        if cleanName.hasSuffix(" 🔒") {
+            cleanName = String(cleanName.dropLast(2))
+        }
+        
+        print("🗑️ Attempting to delete: \(cleanName)")
+        
+        // Check disk format
+        guard let diskFormat = catalog?.diskFormat else {
+            print("❌ No catalog loaded")
             self.deleteNextFile(entries: entries, index: index + 1, from: diskImagePath)
+            return
+        }
+        
+        let isTargetDOS33 = diskFormat.contains("DOS 3.3")
+        
+        if isTargetDOS33 {
+            // Use DOS 3.3 writer
+            DOS33Writer.shared.deleteFile(diskImagePath: diskImagePath, fileName: cleanName) { success, message in
+                if success {
+                    print("✅ Deleted \(cleanName) (DOS 3.3)")
+                } else {
+                    print("❌ Failed to delete \(cleanName): \(message)")
+                }
+                
+                // Continue with next file
+                self.deleteNextFile(entries: entries, index: index + 1, from: diskImagePath)
+            }
+        } else {
+            // Use ProDOS writer
+            ProDOSWriter.shared.deleteFile(diskImagePath: diskImagePath, fileName: cleanName) { success, message in
+                if success {
+                    print("✅ Deleted \(cleanName) (ProDOS)")
+                } else {
+                    print("❌ Failed to delete \(cleanName): \(message)")
+                }
+                
+                // Continue with next file
+                self.deleteNextFile(entries: entries, index: index + 1, from: diskImagePath)
+            }
         }
     }
     
@@ -711,6 +708,19 @@ class DiskPaneViewModel: ObservableObject {
     func showCreateDirectoryDialog() {
         guard let diskImagePath = diskImagePath else {
             print("❌ No disk image loaded")
+            return
+        }
+        
+        // DOS 3.3 doesn't support directories
+        if isDOS33 {
+            print("❌ DOS 3.3 doesn't support directories")
+            DispatchQueue.main.async {
+                let errorAlert = NSAlert()
+                errorAlert.messageText = "Cannot Create Directory"
+                errorAlert.informativeText = "DOS 3.3 disks do not support subdirectories."
+                errorAlert.alertStyle = .warning
+                errorAlert.runModal()
+            }
             return
         }
         
@@ -826,25 +836,48 @@ class DiskPaneViewModel: ObservableObject {
             
             print("✏️ Renaming '\(entry.name)' to '\(newName)'")
             
-            ProDOSWriter.shared.renameFile(
-                diskImagePath: diskImagePath,
-                oldName: entry.name,
-                newName: newName
-            ) { success, message in
-                if success {
-                    print("✅ Renamed to '\(newName)'")
-                    // Reload disk image to show new name
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        self.loadDiskImage(from: diskImagePath)
+            if isDOS33 {
+                DOS33Writer.shared.renameFile(
+                    diskImagePath: diskImagePath,
+                    oldName: entry.name,
+                    newName: newName
+                ) { success, message in
+                    if success {
+                        print("✅ Renamed to '\(newName)' (DOS 3.3)")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            self.loadDiskImage(from: diskImagePath)
+                        }
+                    } else {
+                        print("❌ Failed to rename: \(message)")
+                        DispatchQueue.main.async {
+                            let errorAlert = NSAlert()
+                            errorAlert.messageText = "Failed to Rename"
+                            errorAlert.informativeText = message
+                            errorAlert.alertStyle = .warning
+                            errorAlert.runModal()
+                        }
                     }
-                } else {
-                    print("❌ Failed to rename: \(message)")
-                    DispatchQueue.main.async {
-                        let errorAlert = NSAlert()
-                        errorAlert.messageText = "Failed to Rename"
-                        errorAlert.informativeText = message
-                        errorAlert.alertStyle = .warning
-                        errorAlert.runModal()
+                }
+            } else {
+                ProDOSWriter.shared.renameFile(
+                    diskImagePath: diskImagePath,
+                    oldName: entry.name,
+                    newName: newName
+                ) { success, message in
+                    if success {
+                        print("✅ Renamed to '\(newName)' (ProDOS)")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            self.loadDiskImage(from: diskImagePath)
+                        }
+                    } else {
+                        print("❌ Failed to rename: \(message)")
+                        DispatchQueue.main.async {
+                            let errorAlert = NSAlert()
+                            errorAlert.messageText = "Failed to Rename"
+                            errorAlert.informativeText = message
+                            errorAlert.alertStyle = .warning
+                            errorAlert.runModal()
+                        }
                     }
                 }
             }
@@ -911,24 +944,40 @@ class DiskPaneViewModel: ObservableObject {
         print("📋 Pasting \(clipboard.clipboardEntries.count) items...")
         print("   Operation: \(clipboard.clipboardOperation)")
         
+        // Get source format to use for file type conversion
+        let sourceIsDOS33 = self.catalog?.diskFormat.contains("DOS 3.3") ?? false
+        
         // Copy entries using existing mechanism
-        copyDirectoryContents(clipboard.clipboardEntries, from: sourceDiskPath, to: targetDiskPath) {
+        targetViewModel.copyDirectoryContents(clipboard.clipboardEntries, from: sourceDiskPath, to: targetDiskPath, sourceIsDOS33: sourceIsDOS33) {
             print("✅ All files pasted")
             
             // If it was a CUT operation, delete from source
             if clipboard.clipboardOperation == .cut {
                 print("✂️ Cut operation - deleting from source")
                 
-                // Delete each entry from source
+                // Delete each entry from source (sourceIsDOS33 already defined above)
                 for entry in clipboard.clipboardEntries {
-                    ProDOSWriter.shared.deleteFile(
-                        diskImagePath: sourceDiskPath,
-                        fileName: entry.name
-                    ) { deleteSuccess, message in
-                        if deleteSuccess {
-                            print("✅ Deleted \(entry.name) from source")
-                        } else {
-                            print("❌ Failed to delete \(entry.name): \(message)")
+                    if sourceIsDOS33 {
+                        DOS33Writer.shared.deleteFile(
+                            diskImagePath: sourceDiskPath,
+                            fileName: entry.name
+                        ) { deleteSuccess, message in
+                            if deleteSuccess {
+                                print("✅ Deleted \(entry.name) from source (DOS 3.3)")
+                            } else {
+                                print("❌ Failed to delete \(entry.name): \(message)")
+                            }
+                        }
+                    } else {
+                        ProDOSWriter.shared.deleteFile(
+                            diskImagePath: sourceDiskPath,
+                            fileName: entry.name
+                        ) { deleteSuccess, message in
+                            if deleteSuccess {
+                                print("✅ Deleted \(entry.name) from source (ProDOS)")
+                            } else {
+                                print("❌ Failed to delete \(entry.name): \(message)")
+                            }
                         }
                     }
                 }

@@ -90,6 +90,40 @@ struct DiskBrowserPane: View {
                     }
                 }
                 
+                // Filesystem Type
+                HStack(spacing: 4) {
+                    Text("Filesystem:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    if let diskFormat = viewModel.catalog?.diskFormat {
+                        Text(diskFormat)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    } else {
+                        Text("—")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                // Volume Size
+                HStack(spacing: 4) {
+                    Text("Size:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    if let imageData = viewModel.diskImagePath.flatMap({ try? Data(contentsOf: $0) }) {
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(imageData.count), countStyle: .file))
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    } else {
+                        Text("—")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
                 // Back button and current path
                 HStack(spacing: 8) {
                     Button(action: {

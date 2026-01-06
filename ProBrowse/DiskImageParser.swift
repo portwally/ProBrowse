@@ -87,6 +87,65 @@ class DiskImageParser {
         return formatter.string(from: date)
     }
     
+    // MARK: - DOS 3.3 Date/Time Parsing (not supported by DOS 3.3)
+    
+    /// Map DOS 3.3 file type to human-readable string
+    private static func getDOS33FileTypeString(_ fileType: UInt8) -> String {
+        switch fileType {
+        case 0x00: return "T"    // Text
+        case 0x01: return "INT"  // Integer BASIC
+        case 0x02: return "BAS"  // Applesoft BASIC
+        case 0x04: return "BIN"  // Binary
+        case 0x08: return "S"    // Source (Assembly)
+        case 0x10: return "REL"  // Relocatable
+        case 0x20: return "A"    // Type A (newer, rare)
+        case 0x40: return "B"    // Type B (newer, rare)
+        default:   return String(format: "$%02X", fileType)
+        }
+    }
+    
+    /// Convert DOS 3.3 file type to ProDOS file type
+    /// Known DOS 3.3 types are converted to their ProDOS equivalents.
+    /// Unknown types (which may already be ProDOS types stored on a DOS 3.3 disk) are passed through unchanged.
+    static func convertDOS33ToProDOSFileType(_ dos33Type: UInt8) -> (fileType: UInt8, auxType: UInt16) {
+        switch dos33Type {
+        case 0x00: return (0x04, 0x0000)  // Text → TXT
+        case 0x01: return (0xFA, 0x0000)  // Integer BASIC → INT
+        case 0x02: return (0xFC, 0x0000)  // Applesoft BASIC → BAS
+        case 0x04: return (0x06, 0x0000)  // Binary → BIN
+        case 0x08: return (0xB0, 0x0000)  // Source → SRC (Apple IIgs source)
+        case 0x10: return (0xFE, 0x0000)  // Relocatable → REL
+        case 0x20: return (0x00, 0x0000)  // Type A → NON (typeless)
+        case 0x40: return (0x00, 0x0000)  // Type B → NON (typeless)
+        default:
+            // Unknown type - pass through unchanged
+            // This handles cases where ProDOS types are stored on DOS 3.3 disks
+            // (e.g., $06 BIN, $FC BAS already in ProDOS format)
+            return (dos33Type, 0x0000)
+        }
+    }
+    
+    /// Convert ProDOS file type to DOS 3.3 file type
+    static func convertProDOSToDOS33FileType(_ proDOSType: UInt8, auxType: UInt16) -> UInt8 {
+        switch proDOSType {
+        case 0x04: return 0x00  // TXT → Text
+        case 0xFA: return 0x01  // INT → Integer BASIC
+        case 0xFC: return 0x02  // BAS → Applesoft BASIC
+        case 0x06: return 0x04  // BIN → Binary
+        case 0xB0: return 0x08  // SRC → Source
+        case 0xFE: return 0x10  // REL → Relocatable
+        case 0x08:              // FOT (Graphics) → Binary with special handling
+            // Check auxType for HGR/DHGR
+            if auxType == 0x4000 || auxType == 0x4001 || auxType == 0x8001 || auxType == 0x8002 {
+                return 0x04  // Binary
+            }
+            return 0x04
+        case 0xC0, 0xC1:        // PNT, PIC (Super Hi-Res) → Binary
+            return 0x04
+        default:   return 0x04  // Default to Binary for unknown types
+        }
+    }
+    
     // MARK: - Block Reader Helper
     
     /// Validates if a block is a valid ProDOS Volume Directory Header
@@ -129,8 +188,12 @@ class DiskImageParser {
             }
         }
         
-        // At least 50% of characters should be valid (more permissive)
-        guard validCharCount >= nameLength / 2 else { return false }
+        // At least 80% of characters should be valid (stricter to avoid false positives)
+        guard validCharCount >= (nameLength * 4) / 5 else { return false }
+        
+        // Check 7: First character of volume name should be a letter (ProDOS requirement)
+        let firstChar = block[5] & 0x7F
+        guard (firstChar >= 0x41 && firstChar <= 0x5A) || (firstChar >= 0x61 && firstChar <= 0x7A) else { return false }
         
         return true
     }
@@ -558,7 +621,11 @@ class DiskImageParser {
                 let trackList = Int(data[entryOffset])
                 let sectorList = Int(data[entryOffset + 1])
                 
+                // Skip deleted/invalid entries
                 if trackList == 0 || trackList == 0xFF { continue }
+                
+                // Validate track/sector are in range
+                if trackList >= 35 || sectorList >= 16 { continue }
                 
                 var fileName = ""
                 for i in 0..<30 {
@@ -570,25 +637,44 @@ class DiskImageParser {
                 fileName = fileName.trimmingCharacters(in: .whitespaces)
                 if fileName.isEmpty { continue }
                 
+                // Additional validation: Check if filename contains mostly printable chars
+                let printableCount = fileName.filter { char in
+                    let scalar = char.unicodeScalars.first!
+                    return scalar.value >= 32 && scalar.value < 127
+                }.count
+                
+                // If less than 80% printable, probably garbage
+                if printableCount < (fileName.count * 4) / 5 { continue }
+                
                 let fileType = data[entryOffset + 2] & 0x7F
                 let locked = (data[entryOffset + 2] & 0x80) != 0
+                
+                // Read sector count from catalog (bytes 0x21-0x22, little-endian)
+                let sectorCount = Int(data[entryOffset + 0x21]) | (Int(data[entryOffset + 0x22]) << 8)
+                
+                // Validate sector count is reasonable (0 means deleted, >560 is suspicious for 140KB disk)
+                if sectorCount == 0 || sectorCount > 560 { continue }
                 
                 if let fileData = extractDOS33File(data: data, trackList: trackList, sectorList: sectorList, sectorsPerTrack: sectorsPerTrack, sectorSize: sectorSize) {
                     
                     let isGraphicsFile = (fileType == 0x04 || fileType == 0x42) && fileData.count > 8000
                     
-                    // Get proper file type info from ProDOSFileTypes
-                    let fileTypeInfo = ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: 0)
+                    // Use sector count from catalog to determine displayed size
+                    // This matches what DOS 3.3 CATALOG command shows
+                    let displaySize = sectorCount * sectorSize
+                    
+                    // Get DOS 3.3 specific file type string
+                    let fileTypeString = getDOS33FileTypeString(fileType)
                     
                     entries.append(DiskCatalogEntry(
                         name: fileName + (locked ? " 🔒" : ""),
                         fileType: fileType,
-                        fileTypeString: fileTypeInfo.shortName,
+                        fileTypeString: fileTypeString,
                         auxType: 0,
-                        size: fileData.count,
-                        blocks: nil,
+                        size: displaySize,  // Use catalog sector count
+                        blocks: sectorCount,
                         loadAddress: nil,
-                        length: fileData.count,
+                        length: fileData.count,  // Keep actual data length
                         data: fileData,
                         isImage: isGraphicsFile,
                         isDirectory: false,

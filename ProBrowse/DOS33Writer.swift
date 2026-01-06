@@ -2,7 +2,7 @@
 //  DOS33Writer.swift
 //  ProBrowse
 //
-//  Direct DOS 3.3 disk image manipulation for writing files
+//  Direct DOS 3.3 disk image manipulation for writing and deleting files
 //
 
 import Foundation
@@ -145,6 +145,73 @@ class DOS33Writer {
         return nil
     }
     
+    /// Find a file entry in the catalog by name
+    private func findFileEntry(_ diskData: Data, fileName: String, catalogTrack: Int, catalogSector: Int) -> (track: Int, sector: Int, entryIndex: Int, tsTrack: Int, tsSector: Int)? {
+        // Clean the search name - remove lock icon if present, trim, uppercase
+        var searchName = fileName
+        if searchName.hasSuffix(" 🔒") {
+            searchName = String(searchName.dropLast(2))
+        }
+        searchName = searchName.trimmingCharacters(in: .whitespaces).uppercased()
+        
+        var currentTrack = catalogTrack
+        var currentSector = catalogSector
+        var visitedSectors = Set<String>()
+        
+        print("🔍 Searching DOS 3.3 catalog for: '\(searchName)'")
+        
+        for _ in 0..<100 {
+            let key = "\(currentTrack)-\(currentSector)"
+            if visitedSectors.contains(key) {
+                print("⚠️ Catalog loop detected")
+                break
+            }
+            visitedSectors.insert(key)
+            
+            let sectorOffset = offset(track: currentTrack, sector: currentSector)
+            guard sectorOffset + SECTOR_SIZE <= diskData.count else { break }
+            
+            for entryIdx in 0..<7 {
+                let entryOffset = sectorOffset + 0x0B + (entryIdx * 0x23)
+                let trackByte = diskData[entryOffset]
+                
+                // Skip deleted entries
+                if trackByte == 0x00 || trackByte == 0xFF { continue }
+                
+                // Read filename (strip high bit)
+                var entryName = ""
+                for i in 0..<30 {
+                    let char = diskData[entryOffset + 0x03 + i] & 0x7F
+                    if char == 0x00 { break }
+                    if char >= 0x20 {
+                        entryName.append(Character(UnicodeScalar(char)))
+                    }
+                }
+                entryName = entryName.trimmingCharacters(in: .whitespaces)
+                
+                print("   Found: '\(entryName)'")
+                
+                if entryName.uppercased() == searchName {
+                    let tsTrack = Int(diskData[entryOffset])
+                    let tsSector = Int(diskData[entryOffset + 1])
+                    print("   ✅ Match found at T\(currentTrack) S\(currentSector) Entry#\(entryIdx)")
+                    return (currentTrack, currentSector, entryIdx, tsTrack, tsSector)
+                }
+            }
+            
+            let nextTrack = Int(diskData[sectorOffset + 0x01])
+            let nextSector = Int(diskData[sectorOffset + 0x02])
+            
+            if nextTrack == 0 { break }
+            
+            currentTrack = nextTrack
+            currentSector = nextSector
+        }
+        
+        print("   ❌ File not found")
+        return nil
+    }
+    
     /// Allocate sectors for a file using VTOC bitmap
     private func allocateSectors(_ diskData: NSMutableData, sectorCount: Int, direction: Int) -> [(track: Int, sector: Int)]? {
         let vtocOffset = offset(track: VTOC_TRACK, sector: VTOC_SECTOR)
@@ -157,7 +224,12 @@ class DOS33Writer {
         let bitmapOffset = vtocOffset + 0x38
         
         // Determine search direction
-        let trackRange = direction == 0x01 ? (0..<TRACKS) : stride(from: TRACKS-1, through: 0, by: -1)
+        let trackRange: [Int]
+        if direction == 0x01 {
+            trackRange = Array(0..<TRACKS)
+        } else {
+            trackRange = Array(stride(from: TRACKS-1, through: 0, by: -1))
+        }
         
         for track in trackRange {
             // Skip track 17 (VTOC and catalog)
@@ -182,11 +254,12 @@ class DOS33Writer {
                     // Mark as used in bitmap
                     bitmap &= ~mask
                     
-                    // Write updated bitmap back
-                    diskData[trackBitmapOffset] = UInt8(bitmap & 0xFF)
-                    diskData[trackBitmapOffset + 1] = UInt8((bitmap >> 8) & 0xFF)
-                    diskData[trackBitmapOffset + 2] = UInt8((bitmap >> 16) & 0xFF)
-                    diskData[trackBitmapOffset + 3] = UInt8((bitmap >> 24) & 0xFF)
+                    // Write updated bitmap back to NSMutableData
+                    let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+                    bytes[trackBitmapOffset] = UInt8(bitmap & 0xFF)
+                    bytes[trackBitmapOffset + 1] = UInt8((bitmap >> 8) & 0xFF)
+                    bytes[trackBitmapOffset + 2] = UInt8((bitmap >> 16) & 0xFF)
+                    bytes[trackBitmapOffset + 3] = UInt8((bitmap >> 24) & 0xFF)
                     
                     if allocatedSectors.count >= sectorCount {
                         return allocatedSectors
@@ -197,6 +270,84 @@ class DOS33Writer {
         
         print("❌ Not enough free sectors (needed \(sectorCount), found \(allocatedSectors.count))")
         return nil
+    }
+    
+    /// Free sectors in the VTOC bitmap
+    private func freeSectors(_ diskData: NSMutableData, sectors: [(track: Int, sector: Int)]) {
+        let vtocOffset = offset(track: VTOC_TRACK, sector: VTOC_SECTOR)
+        let bitmapOffset = vtocOffset + 0x38
+        let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+        
+        for sector in sectors {
+            // Skip invalid sectors
+            guard sector.track < TRACKS && sector.sector < SECTORS_PER_TRACK else { continue }
+            
+            let trackBitmapOffset = bitmapOffset + (sector.track * 4)
+            
+            // Read current bitmap for this track
+            var bitmap = UInt32(bytes[trackBitmapOffset])
+            bitmap |= UInt32(bytes[trackBitmapOffset + 1]) << 8
+            bitmap |= UInt32(bytes[trackBitmapOffset + 2]) << 16
+            bitmap |= UInt32(bytes[trackBitmapOffset + 3]) << 24
+            
+            // Set bit to mark sector as free
+            let mask: UInt32 = 1 << sector.sector
+            bitmap |= mask
+            
+            // Write updated bitmap back
+            bytes[trackBitmapOffset] = UInt8(bitmap & 0xFF)
+            bytes[trackBitmapOffset + 1] = UInt8((bitmap >> 8) & 0xFF)
+            bytes[trackBitmapOffset + 2] = UInt8((bitmap >> 16) & 0xFF)
+            bytes[trackBitmapOffset + 3] = UInt8((bitmap >> 24) & 0xFF)
+        }
+        
+        print("   🔓 Freed \(sectors.count) sectors in VTOC bitmap")
+    }
+    
+    /// Get all sectors used by a file (T/S list sectors + data sectors)
+    private func getFileSectors(_ diskData: Data, tsTrack: Int, tsSector: Int) -> [(track: Int, sector: Int)] {
+        var allSectors: [(track: Int, sector: Int)] = []
+        var currentTrack = tsTrack
+        var currentSector = tsSector
+        var visitedTSLists = Set<String>()
+        
+        // Follow the T/S list chain
+        while currentTrack != 0 {
+            let key = "\(currentTrack)-\(currentSector)"
+            if visitedTSLists.contains(key) {
+                print("⚠️ T/S list loop detected")
+                break
+            }
+            visitedTSLists.insert(key)
+            
+            // Add the T/S list sector itself
+            allSectors.append((currentTrack, currentSector))
+            
+            let tsListOffset = offset(track: currentTrack, sector: currentSector)
+            guard tsListOffset + SECTOR_SIZE <= diskData.count else { break }
+            
+            // Read data sector pointers from this T/S list
+            // T/S pairs start at offset 0x0C (12 bytes in)
+            for pairIdx in 0..<122 {
+                let pairOffset = tsListOffset + 0x0C + (pairIdx * 2)
+                let dataTrack = Int(diskData[pairOffset])
+                let dataSector = Int(diskData[pairOffset + 1])
+                
+                // Track 0 means end of sector list
+                if dataTrack == 0 { break }
+                
+                // Validate sector
+                if dataTrack < TRACKS && dataSector < SECTORS_PER_TRACK {
+                    allSectors.append((dataTrack, dataSector))
+                }
+            }
+            
+            // Get next T/S list sector
+            currentTrack = Int(diskData[tsListOffset + 0x01])
+            currentSector = Int(diskData[tsListOffset + 0x02])
+        }
+        
+        return allSectors
     }
     
     /// Create T/S List sector(s) for a file
@@ -218,23 +369,24 @@ class DOS33Writer {
             let tsListOffset = offset(track: tsListSector.track, sector: tsListSector.sector)
             
             // Clear the T/S list sector
+            let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
             for i in 0..<SECTOR_SIZE {
-                diskData[tsListOffset + i] = 0x00
+                bytes[tsListOffset + i] = 0x00
             }
             
             // Write next T/S list pointer (if there is one)
             if tsListIdx < tsListSectors.count - 1 {
                 let nextTSList = tsListSectors[tsListIdx + 1]
-                diskData[tsListOffset + 0x01] = UInt8(nextTSList.track)
-                diskData[tsListOffset + 0x02] = UInt8(nextTSList.sector)
+                bytes[tsListOffset + 0x01] = UInt8(nextTSList.track)
+                bytes[tsListOffset + 0x02] = UInt8(nextTSList.sector)
             } else {
                 // Last T/S list
-                diskData[tsListOffset + 0x01] = 0x00
-                diskData[tsListOffset + 0x02] = 0x00
+                bytes[tsListOffset + 0x01] = 0x00
+                bytes[tsListOffset + 0x02] = 0x00
             }
             
             // Write sector offset (for large files with multiple T/S lists)
-            diskData[tsListOffset + 0x05] = UInt8(tsListIdx * maxPairsPerSector)
+            bytes[tsListOffset + 0x05] = UInt8(tsListIdx * maxPairsPerSector)
             
             // Write T/S pairs
             var pairIndex = 0
@@ -242,8 +394,8 @@ class DOS33Writer {
                 let dataSector = dataSectors[dataIndex]
                 let pairOffset = tsListOffset + 0x0C + (pairIndex * 2)
                 
-                diskData[pairOffset] = UInt8(dataSector.track)
-                diskData[pairOffset + 1] = UInt8(dataSector.sector)
+                bytes[pairOffset] = UInt8(dataSector.track)
+                bytes[pairOffset + 1] = UInt8(dataSector.sector)
                 
                 pairIndex += 1
                 dataIndex += 1
@@ -256,10 +408,18 @@ class DOS33Writer {
     // MARK: - Public API
     
     /// Add a file to a DOS 3.3 disk image
-    func addFile(diskImagePath: URL, fileName: String, fileData: Data, fileType: UInt8, locked: Bool = false, completion: @escaping (Bool, String) -> Void) {
+    /// - Parameter fileType: ProDOS file type (will be converted to DOS 3.3 automatically)
+    /// - Parameter auxType: ProDOS aux type (used for conversion)
+    func addFile(diskImagePath: URL, fileName: String, fileData: Data, fileType: UInt8, auxType: UInt16 = 0, locked: Bool = false, completion: @escaping (Bool, String) -> Void) {
         
         DispatchQueue.global(qos: .userInitiated).async {
             do {
+                // Convert ProDOS file type to DOS 3.3 file type
+                let dos33FileType = DiskImageParser.convertProDOSToDOS33FileType(fileType, auxType: auxType)
+                
+                print("📝 DOS 3.3 Write: Adding file '\(fileName)'")
+                print("   FileType conversion: ProDOS $\(String(format: "%02X", fileType)) → DOS 3.3 $\(String(format: "%02X", dos33FileType))")
+                
                 // Load disk image
                 guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
                     DispatchQueue.main.async {
@@ -276,6 +436,26 @@ class DOS33Writer {
                     return
                 }
                 
+                // Check if file already exists - generate unique name if needed
+                var finalName = fileName
+                var counter = 1
+                while self.fileExists(diskData as Data, fileName: finalName) {
+                    // Truncate base name to make room for number suffix
+                    let baseName = String(fileName.prefix(27))  // Leave room for ".XX"
+                    finalName = "\(baseName).\(counter)"
+                    counter += 1
+                    if counter > 99 {
+                        DispatchQueue.main.async {
+                            completion(false, "Too many files with similar names")
+                        }
+                        return
+                    }
+                }
+                
+                if finalName != fileName {
+                    print("   ⚠️ File exists, renamed to: \(finalName)")
+                }
+                
                 // Find free catalog entry
                 guard let catalogEntry = self.findFreeCatalogEntry(diskData as Data, catalogTrack: vtocInfo.catalogTrack, catalogSector: vtocInfo.catalogSector) else {
                     DispatchQueue.main.async {
@@ -287,7 +467,7 @@ class DOS33Writer {
                 print("📝 Found free catalog entry: T\(catalogEntry.track) S\(catalogEntry.sector) Entry #\(catalogEntry.entryIndex)")
                 
                 // Calculate how many sectors we need
-                let sectorsNeeded = (fileData.count + SECTOR_SIZE - 1) / SECTOR_SIZE
+                let sectorsNeeded = max(1, (fileData.count + self.SECTOR_SIZE - 1) / self.SECTOR_SIZE)
                 
                 // Calculate T/S list sectors needed (122 pairs per T/S list sector)
                 let tsListSectorsNeeded = (sectorsNeeded + 121) / 122
@@ -321,17 +501,15 @@ class DOS33Writer {
                     let remainingData = fileData.count - dataOffset
                     let bytesToWrite = min(self.SECTOR_SIZE, remainingData)
                     
+                    let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+                    
+                    // Clear the sector first
+                    memset(bytes + sectorOffset, 0, self.SECTOR_SIZE)
+                    
                     if bytesToWrite > 0 {
-                        let range = dataOffset..<(dataOffset + bytesToWrite)
-                        let sectorData = fileData.subdata(in: range)
-                        diskData.replaceBytes(in: NSRange(location: sectorOffset, length: bytesToWrite), withBytes: (sectorData as NSData).bytes)
-                        
-                        // Pad rest of sector with zeros if needed
-                        if bytesToWrite < self.SECTOR_SIZE {
-                            let padding = Data(repeating: 0, count: self.SECTOR_SIZE - bytesToWrite)
-                            diskData.replaceBytes(in: NSRange(location: sectorOffset + bytesToWrite, length: padding.count), withBytes: (padding as NSData).bytes)
+                        fileData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+                            memcpy(bytes + sectorOffset, ptr.baseAddress! + dataOffset, bytesToWrite)
                         }
-                        
                         dataOffset += bytesToWrite
                     }
                 }
@@ -359,40 +537,117 @@ class DOS33Writer {
                 // +0x03-0x20: Filename (30 bytes, space-padded, high ASCII)
                 // +0x21-0x22: File size in sectors (little-endian)
                 
-                let sanitizedName = self.sanitizeDOS33Filename(fileName)
+                let sanitizedName = self.sanitizeDOS33Filename(finalName)
                 let firstTSList = tsListSectors[0]
                 
-                // Write T/S list pointer
-                diskData[entryOffset + 0x00] = UInt8(firstTSList.track)
-                diskData[entryOffset + 0x01] = UInt8(firstTSList.sector)
+                let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
                 
-                // Write file type (with lock bit if needed)
-                var fileTypeByte = fileType & 0x7F
+                // Write T/S list pointer
+                bytes[entryOffset + 0x00] = UInt8(firstTSList.track)
+                bytes[entryOffset + 0x01] = UInt8(firstTSList.sector)
+                
+                // Write file type (with lock bit if needed) - use converted DOS 3.3 type
+                var fileTypeByte = dos33FileType & 0x7F
                 if locked {
                     fileTypeByte |= 0x80
                 }
-                diskData[entryOffset + 0x02] = fileTypeByte
+                bytes[entryOffset + 0x02] = fileTypeByte
                 
                 // Write filename (high ASCII - set bit 7)
                 for i in 0..<30 {
                     let char = i < sanitizedName.count ? sanitizedName[sanitizedName.index(sanitizedName.startIndex, offsetBy: i)] : " "
                     let asciiValue = char.asciiValue ?? 0x20
-                    diskData[entryOffset + 0x03 + i] = asciiValue | 0x80  // Set high bit
+                    bytes[entryOffset + 0x03 + i] = asciiValue | 0x80  // Set high bit
                 }
                 
                 // Write file size in sectors (little-endian)
-                diskData[entryOffset + 0x21] = UInt8(sectorsNeeded & 0xFF)
-                diskData[entryOffset + 0x22] = UInt8((sectorsNeeded >> 8) & 0xFF)
+                bytes[entryOffset + 0x21] = UInt8(sectorsNeeded & 0xFF)
+                bytes[entryOffset + 0x22] = UInt8((sectorsNeeded >> 8) & 0xFF)
                 
-                print("✅ Wrote catalog entry: \(sanitizedName)")
+                print("✅ Wrote catalog entry: \(sanitizedName.trimmingCharacters(in: .whitespaces))")
                 
                 // Write back to disk
-                diskData.write(to: diskImagePath, atomically: true)
+                try diskData.write(to: diskImagePath, options: .atomic)
                 
                 print("✅ DOS 3.3 write complete!")
                 
                 DispatchQueue.main.async {
-                    completion(true, "Successfully wrote \(fileName) to DOS 3.3 disk")
+                    completion(true, "Successfully wrote \(finalName) to DOS 3.3 disk")
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "Error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    /// Delete a file from a DOS 3.3 disk image
+    func deleteFile(diskImagePath: URL, fileName: String, completion: @escaping (Bool, String) -> Void) {
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                print("🗑️ DOS 3.3 Delete: Removing file '\(fileName)'")
+                
+                // Load disk image
+                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read disk image")
+                    }
+                    return
+                }
+                
+                // Read VTOC to get catalog location
+                guard let vtocInfo = self.readVTOC(diskData as Data) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Invalid VTOC")
+                    }
+                    return
+                }
+                
+                // Find the file entry
+                guard let fileEntry = self.findFileEntry(diskData as Data, fileName: fileName, catalogTrack: vtocInfo.catalogTrack, catalogSector: vtocInfo.catalogSector) else {
+                    DispatchQueue.main.async {
+                        completion(false, "File not found: \(fileName)")
+                    }
+                    return
+                }
+                
+                print("   📍 Found file at T\(fileEntry.track) S\(fileEntry.sector) Entry#\(fileEntry.entryIndex)")
+                print("   📍 T/S List starts at T\(fileEntry.tsTrack) S\(fileEntry.tsSector)")
+                
+                // Get all sectors used by this file
+                let sectorsToFree = self.getFileSectors(diskData as Data, tsTrack: fileEntry.tsTrack, tsSector: fileEntry.tsSector)
+                
+                print("   📦 File uses \(sectorsToFree.count) sectors")
+                
+                // Free the sectors in the VTOC bitmap
+                self.freeSectors(diskData, sectors: sectorsToFree)
+                
+                // Mark the catalog entry as deleted
+                // DOS 3.3 deletion: Set first byte of entry (T/S list track) to 0xFF
+                // and copy the original track number to byte 0x20 (last byte before sector count)
+                let catalogSectorOffset = self.offset(track: fileEntry.track, sector: fileEntry.sector)
+                let entryOffset = catalogSectorOffset + 0x0B + (fileEntry.entryIndex * 0x23)
+                
+                let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+                
+                // Save original T/S list track to byte 0x20 (for UNDELETE functionality)
+                bytes[entryOffset + 0x20] = UInt8(fileEntry.tsTrack)
+                
+                // Mark entry as deleted by setting track to 0xFF
+                bytes[entryOffset + 0x00] = 0xFF
+                
+                print("   ✅ Marked catalog entry as deleted")
+                
+                // Write back to disk
+                try diskData.write(to: diskImagePath, options: .atomic)
+                
+                print("✅ DOS 3.3 delete complete!")
+                
+                DispatchQueue.main.async {
+                    completion(true, "File deleted successfully")
                 }
                 
             } catch {
@@ -448,5 +703,79 @@ class DOS33Writer {
         }
         
         return false
+    }
+    
+    /// Rename a file in a DOS 3.3 disk image
+    func renameFile(diskImagePath: URL, oldName: String, newName: String, completion: @escaping (Bool, String) -> Void) {
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                print("✏️ DOS 3.3 Rename: '\(oldName)' → '\(newName)'")
+                
+                // Load disk image
+                guard let diskData = NSMutableData(contentsOf: diskImagePath) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Could not read disk image")
+                    }
+                    return
+                }
+                
+                // Read VTOC to get catalog location
+                guard let vtocInfo = self.readVTOC(diskData as Data) else {
+                    DispatchQueue.main.async {
+                        completion(false, "Invalid VTOC")
+                    }
+                    return
+                }
+                
+                // Find the file entry
+                guard let fileEntry = self.findFileEntry(diskData as Data, fileName: oldName, catalogTrack: vtocInfo.catalogTrack, catalogSector: vtocInfo.catalogSector) else {
+                    DispatchQueue.main.async {
+                        completion(false, "File not found: \(oldName)")
+                    }
+                    return
+                }
+                
+                // Sanitize new name
+                let sanitizedName = self.sanitizeDOS33Filename(newName)
+                
+                // Check if new name already exists
+                if self.fileExists(diskData as Data, fileName: newName) {
+                    DispatchQueue.main.async {
+                        completion(false, "A file named '\(newName)' already exists")
+                    }
+                    return
+                }
+                
+                // Update the filename in the catalog entry
+                let catalogSectorOffset = self.offset(track: fileEntry.track, sector: fileEntry.sector)
+                let entryOffset = catalogSectorOffset + 0x0B + (fileEntry.entryIndex * 0x23)
+                
+                let bytes = diskData.mutableBytes.assumingMemoryBound(to: UInt8.self)
+                
+                // Write new filename (high ASCII - set bit 7)
+                for i in 0..<30 {
+                    let char = i < sanitizedName.count ? sanitizedName[sanitizedName.index(sanitizedName.startIndex, offsetBy: i)] : " "
+                    let asciiValue = char.asciiValue ?? 0x20
+                    bytes[entryOffset + 0x03 + i] = asciiValue | 0x80
+                }
+                
+                print("   ✅ Updated filename in catalog")
+                
+                // Write back to disk
+                try diskData.write(to: diskImagePath, options: .atomic)
+                
+                print("✅ DOS 3.3 rename complete!")
+                
+                DispatchQueue.main.async {
+                    completion(true, "File renamed successfully")
+                }
+                
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "Error: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 }
