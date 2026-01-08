@@ -31,19 +31,32 @@ class UCSDPascalParser {
     
     // MARK: - Block Reading with Interleaving Support
     
-    // DOS 3.3 sector interleave maps (same as DiskImageParser)
-    private static let dosToProDOSMapTrack0: [Int] = [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
-    private static let dosToProDOSMapData: [Int] = [0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15]
+    // UCSD Pascal block to .DSK sector mapping for Apple II
+    //
+    // Empirically verified: Block 2 (directory) starts at DSK sector 11
+    // The second half of block 2 is at DSK sector 10 (the next file entries)
+    //
+    // Pattern determined by analyzing UCSD_Pascal_1_0_0.DSK:
+    // Block 0 -> DSK sectors 0, 1 (boot code)
+    // Block 1 -> DSK sectors 13, 14 or similar
+    // Block 2 -> DSK sectors 11, 10 (directory - confirmed!)
+    // Block 3 -> DSK sectors 9, 8
+    // Block 4 -> DSK sectors 7, 6
+    // Block 5 -> DSK sectors 5, 4
+    // Block 6 -> DSK sectors 3, 2
+    // Block 7 -> DSK sectors 15, 12
+    //
+    // This follows descending pairs from sector 11 down for blocks 2-6
     
     /// Read a 512-byte block, handling interleaving for floppy images
     private static func readBlock(_ data: Data, blockIndex: Int, isDOSOrder: Bool) -> Data? {
         if !isDOSOrder {
-            // Linear access
+            // Linear access (for .po files)
             let offset = blockIndex * BLOCK_SIZE
             guard offset + BLOCK_SIZE <= data.count else { return nil }
             return data.subdata(in: offset..<(offset + BLOCK_SIZE))
         } else {
-            // DOS order interleaved
+            // DOS order (.dsk/.do files) - UCSD Pascal block mapping
             let blocksPerTrack = 8
             let track = blockIndex / blocksPerTrack
             let blockInTrack = blockIndex % blocksPerTrack
@@ -51,22 +64,35 @@ class UCSDPascalParser {
             let sectorSize = 256
             let trackOffset = track * 16 * sectorSize
             
-            guard trackOffset < data.count else { return nil }
+            guard trackOffset + (16 * sectorSize) <= data.count else { return nil }
             
-            let mapping = (track == 0) ? dosToProDOSMapTrack0 : dosToProDOSMapData
+            // Map block within track to DSK sector pair
+            // Block 2 = sectors 11, 10 (verified from directory data)
+            // Pattern: descending pairs for each block
+            let sector1: Int
+            let sector2: Int
             
-            let lowerSectorIdx = mapping[blockInTrack * 2]
-            let upperSectorIdx = mapping[blockInTrack * 2 + 1]
+            switch blockInTrack {
+            case 0: sector1 = 0;  sector2 = 1    // Block 0 - boot sectors
+            case 1: sector1 = 13; sector2 = 12  // Block 1
+            case 2: sector1 = 11; sector2 = 10  // Block 2 - DIRECTORY (verified!)
+            case 3: sector1 = 9;  sector2 = 8   // Block 3
+            case 4: sector1 = 7;  sector2 = 6   // Block 4
+            case 5: sector1 = 5;  sector2 = 4   // Block 5
+            case 6: sector1 = 3;  sector2 = 2   // Block 6
+            case 7: sector1 = 15; sector2 = 14  // Block 7
+            default: return nil
+            }
             
-            let lowerOffset = trackOffset + (lowerSectorIdx * sectorSize)
-            let upperOffset = trackOffset + (upperSectorIdx * sectorSize)
+            let offset1 = trackOffset + (sector1 * sectorSize)
+            let offset2 = trackOffset + (sector2 * sectorSize)
             
-            guard lowerOffset + sectorSize <= data.count,
-                  upperOffset + sectorSize <= data.count else { return nil }
+            guard offset1 + sectorSize <= data.count,
+                  offset2 + sectorSize <= data.count else { return nil }
             
             var blockData = Data()
-            blockData.append(data.subdata(in: lowerOffset..<(lowerOffset + sectorSize)))
-            blockData.append(data.subdata(in: upperOffset..<(upperOffset + sectorSize)))
+            blockData.append(data.subdata(in: offset1..<(offset1 + sectorSize)))
+            blockData.append(data.subdata(in: offset2..<(offset2 + sectorSize)))
             
             return blockData
         }
@@ -78,36 +104,58 @@ class UCSDPascalParser {
     private static func isValidUCSDVolume(_ dirBlock: Data) -> Bool {
         guard dirBlock.count >= BLOCK_SIZE else { return false }
         
-        // First entry in directory is the volume header
-        // +$00-01: First block (should be 0)
-        // +$02-03: Last block (next block after volume = total blocks)
-        // +$04: File type (should be 0 for volume header)
-        // +$05: Volume name length (1-7)
-        // +$06-0C: Volume name (7 bytes)
+        // UCSD Pascal Volume Directory Header structure:
+        // +$00-01: First block of volume (should be 0)
+        // +$02-03: Next block after last block in volume (= total blocks)
+        // +$04-05: File type and flags (type 0 = volume header)
+        // +$06: Volume name length (1-7)
+        // +$07-0D: Volume name (7 bytes)
+        // +$0E-0F: Total blocks in volume
+        // +$10-11: Number of files in directory
+        // +$12-13: Last access time
+        // +$14-15: Date set
         
         let firstBlock = UInt16(dirBlock[0]) | (UInt16(dirBlock[1]) << 8)
         let lastBlock = UInt16(dirBlock[2]) | (UInt16(dirBlock[3]) << 8)
-        let fileType = dirBlock[4]
-        let nameLength = dirBlock[5]
+        let fileType = dirBlock[4] & 0x0F  // Low nibble is type
+        let nameLength = dirBlock[6]  // CORRECTED: name length is at offset 6, not 5
+        
+        print("🔍 UCSD validation: firstBlock=\(firstBlock), lastBlock=\(lastBlock), fileType=\(fileType), nameLen=\(nameLength)")
         
         // Volume header should have firstBlock = 0
-        guard firstBlock == 0 else { return false }
-        
-        // Last block should be reasonable (6 to 65535)
-        guard lastBlock >= 6 && lastBlock <= 65535 else { return false }
-        
-        // File type for volume header should be 0
-        guard fileType == 0 else { return false }
-        
-        // Name length should be 1-7 for volume name
-        guard nameLength >= 1 && nameLength <= 7 else { return false }
-        
-        // Check volume name is printable ASCII
-        for i in 0..<Int(nameLength) {
-            let char = dirBlock[6 + i]
-            guard char >= 0x20 && char < 0x7F else { return false }
+        guard firstBlock == 0 else {
+            print("   ❌ firstBlock != 0")
+            return false
         }
         
+        // Last block should be reasonable (6 to 65535)
+        guard lastBlock >= 6 && lastBlock <= 65535 else {
+            print("   ❌ lastBlock out of range: \(lastBlock)")
+            return false
+        }
+        
+        // File type for volume header should be 0
+        guard fileType == 0 else {
+            print("   ❌ fileType != 0")
+            return false
+        }
+        
+        // Name length should be 1-7 for volume name
+        guard nameLength >= 1 && nameLength <= 7 else {
+            print("   ❌ nameLength out of range: \(nameLength)")
+            return false
+        }
+        
+        // Check volume name is printable ASCII (starting at offset 7)
+        for i in 0..<Int(nameLength) {
+            let char = dirBlock[7 + i]  // CORRECTED: name starts at offset 7, not 6
+            guard char >= 0x20 && char < 0x7F else {
+                print("   ❌ Invalid char in name at position \(i)")
+                return false
+            }
+        }
+        
+        print("   ✅ Valid UCSD Pascal volume header")
         return true
     }
     
@@ -225,17 +273,18 @@ class UCSDPascalParser {
         }
         
         // Parse volume header (first entry)
-        let volNameLength = Int(dirBlock[5])
+        // Name length is at offset 6, name starts at offset 7
+        let volNameLength = Int(dirBlock[6])
         var volumeName = ""
         for i in 0..<min(volNameLength, 7) {
-            let char = dirBlock[6 + i]
+            let char = dirBlock[7 + i]  // CORRECTED: name starts at offset 7
             if char >= 0x20 && char < 0x7F {
                 volumeName.append(Character(UnicodeScalar(char)))
             }
         }
         
-        let totalBlocks = Int(UInt16(dirBlock[2]) | (UInt16(dirBlock[3]) << 8))
-        let numFiles = Int(UInt16(dirBlock[16]) | (UInt16(dirBlock[17]) << 8))
+        let totalBlocks = Int(UInt16(dirBlock[14]) | (UInt16(dirBlock[15]) << 8))  // Offset 0x0E-0F
+        let numFiles = Int(UInt16(dirBlock[16]) | (UInt16(dirBlock[17]) << 8))      // Offset 0x10-11
         
         print("📀 UCSD Pascal Volume: \(volumeName)")
         print("   Total blocks: \(totalBlocks)")
@@ -259,8 +308,8 @@ class UCSDPascalParser {
             
             let firstBlock = Int(UInt16(allDirData[entryOffset]) | (UInt16(allDirData[entryOffset + 1]) << 8))
             let lastBlock = Int(UInt16(allDirData[entryOffset + 2]) | (UInt16(allDirData[entryOffset + 3]) << 8))
-            let fileType = allDirData[entryOffset + 4]
-            let nameLength = Int(allDirData[entryOffset + 5])
+            let fileType = allDirData[entryOffset + 4] & 0x0F  // Low nibble is type
+            let nameLength = Int(allDirData[entryOffset + 6])   // CORRECTED: offset 6, not 5
             
             // Empty entry check
             if firstBlock == 0 && lastBlock == 0 { continue }
@@ -270,10 +319,10 @@ class UCSDPascalParser {
             if firstBlock >= lastBlock { continue }
             if lastBlock > totalBlocks { continue }
             
-            // Parse filename
+            // Parse filename (starts at offset 7, not 6)
             var fileName = ""
             for i in 0..<nameLength {
-                let char = allDirData[entryOffset + 6 + i]
+                let char = allDirData[entryOffset + 7 + i]  // CORRECTED: name starts at offset 7
                 if char >= 0x20 && char < 0x7F {
                     fileName.append(Character(UnicodeScalar(char)))
                 }
