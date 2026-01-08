@@ -56,12 +56,6 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 | UCSD Pascal | ✅ | ❌ | Read-only |
 | ShrinkIt Archives | ✅ | ❌ | Read-only, extraction supported |
 
-### Supported Graphics Formats
-
-- **HGR** - Hi-Res Graphics (280×192)
-- **DHGR** - Double Hi-Res Graphics (560×192)
-- **SHR** - Super Hi-Res (320×200 / 640×200)
-- **APF** - Apple Preferred Format (packed SHR)
 
 ### Requirements
 
