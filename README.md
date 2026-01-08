@@ -1,10 +1,9 @@
 # ProBrowse
 
-**⚠️ BETA VERSION - USE AT YOUR OWN RISK ⚠️**
-
-This is an early beta version under active development. It may contain bugs that could corrupt your disk images. **Always backup your disk images before using ProBrowse!**
+This is an early version under active development. It may contain bugs that could corrupt your disk images. **Always backup your disk images before using ProBrowse!**
 
 ---
+
 <img width="1561" height="820" alt="Bildschirmfoto 2025-12-27 um 20 02 29" src="https://github.com/user-attachments/assets/19469707-805b-4c16-9fb5-c9f4bc5179f8" />
 
 ## What is ProBrowse?
@@ -15,6 +14,9 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 
 ✅ **Dual-Pane Browser** - Work with two disk images simultaneously  
 ✅ **Native ProDOS Support** - Read and write ProDOS disk images natively in Swift  
+✅ **DOS 3.3 Support** - Full read and write support for DOS 3.3 disk images  
+✅ **UCSD Pascal Support** - Read UCSD Pascal volumes (read-only)  
+✅ **ShrinkIt Archives** - Browse and extract NuFX archives (.shk, .sdk, .bxy)  
 ✅ **Drag & Drop** - Copy files between disk images with ease  
 ✅ **Complete File Type Database** - Recognizes 200+ ProDOS file types with proper names  
 ✅ **Graphics Preview** - View Apple II graphics (HGR, DHGR, SHR, APF) directly  
@@ -22,21 +24,55 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 ✅ **Modern UI** - Clean SwiftUI interface with resizable columns  
 ✅ **Export Capability** - Extract files to your Mac  
 
-### Supported Formats
+### Supported Disk Image Formats
 
-- **Disk Images**: `.po`, `.2mg` (ProDOS format)
-- **Graphics**: HGR, DHGR, SHR (Super Hi-Res), APF (Apple Preferred Format)
-- **File Systems**: ProDOS (read/write), DOS 3.3 (read-only)
+| Format | Extension | Read | Write |
+|--------|-----------|------|-------|
+| ProDOS Order | `.po` | ✅ | ✅ |
+| DOS Order | `.do` | ✅ | ✅ |
+| Universal 2IMG | `.2mg` | ✅ | ✅ |
+| Hard Disk Volume | `.hdv` | ✅ | ✅ |
+| Generic DSK | `.dsk` | ✅ | ✅ |
+| WOZ | `.woz` | ✅ | ❌ |
+| UCSD Pascal Volume | `.vol` | ✅ | ❌ |
+
+### Supported Archive Formats
+
+| Format | Extension | Description |
+|--------|-----------|-------------|
+| ShrinkIt Disk | `.sdk` | Compressed disk images |
+| ShrinkIt Archive | `.shk` | Compressed file archives |
+| Binary II + ShrinkIt | `.bxy` | Binary II wrapped ShrinkIt |
+| Binary II | `.bny` | Binary II archives |
+
+*Note: ShrinkIt support requires [nulib2](https://github.com/fadden/nulib2) for LZW-compressed archives. Install via `brew install nulib2`.*
+
+### Supported File Systems
+
+| File System | Read | Write | Notes |
+|-------------|------|-------|-------|
+| ProDOS | ✅ | ✅ | Full support including subdirectories |
+| DOS 3.3 | ✅ | ✅ | Full support |
+| UCSD Pascal | ✅ | ❌ | Read-only |
+| ShrinkIt Archives | ✅ | ❌ | Read-only, extraction supported |
+
+### Supported Graphics Formats
+
+- **HGR** - Hi-Res Graphics (280×192)
+- **DHGR** - Double Hi-Res Graphics (560×192)
+- **SHR** - Super Hi-Res (320×200 / 640×200)
+- **APF** - Apple Preferred Format (packed SHR)
 
 ### Requirements
 
 - macOS 14.0 (Sonoma) or later
 - Apple Silicon or Intel Mac
+- Optional: [nulib2](https://github.com/fadden/nulib2) for ShrinkIt LZW decompression
 
 ### Current Limitations
 
-- Subdirectory copying not yet fully implemented
-- No DOS 3.3 write support (read-only)
+- UCSD Pascal and ShrinkIt archives are read-only
+- WOZ disk images are read-only
 - Beta quality - expect bugs!
 
 ---
@@ -44,7 +80,7 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 ## Quick Start
 
 1. Open two disk images (left and right panes)
-2. Browse files with full ProDOS directory support
+2. Browse files with full directory support
 3. Drag & drop files between images
 4. Export files to your Mac
 5. View Apple II graphics inline
@@ -70,7 +106,6 @@ Built with Swift and SwiftUI for modern macOS.
 ---
 
 **Remember: Always backup your disk images before using beta software!**
-
 
 [![Downloads](https://img.shields.io/github/downloads/portwally/ProBrowse/total?style=flat&color=0d6efd)](https://github.com/portwally/ProBrowse/releases)
 [![Stars](https://img.shields.io/github/stars/portwally/ProBrowse?style=flat&color=f1c40f)](https://github.com/portwally/ProBrowse/stargazers)
