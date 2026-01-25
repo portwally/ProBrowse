@@ -23,11 +23,6 @@ extension UTType {
         UTType(filenameExtension: "hdv") ?? .data
     }
     
-    // WOZ disk image (Write-Optimized format)
-    static var woz: UTType {
-        UTType(filenameExtension: "woz") ?? .data
-    }
-    
     // DSK disk image (generic)
     static var dsk: UTType {
         UTType(filenameExtension: "dsk") ?? .data

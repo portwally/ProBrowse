@@ -49,7 +49,7 @@ struct DiskBrowserPane: View {
         }
         .fileImporter(
             isPresented: $viewModel.showingFilePicker,
-            allowedContentTypes: [.po, .twoimg, .hdv, .woz, .dsk, .do],
+            allowedContentTypes: [.po, .twoimg, .hdv, .dsk, .do],
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -64,6 +64,16 @@ struct DiskBrowserPane: View {
         .sheet(isPresented: $viewModel.showingFileInfo) {
             if let entry = viewModel.fileInfoEntry {
                 FileInfoSheet(entry: entry)
+            }
+        }
+        .sheet(isPresented: $viewModel.showingChangeFileType) {
+            if let entry = viewModel.changeFileTypeEntry {
+                ChangeFileTypeSheet(
+                    entry: entry,
+                    onSave: { newFileType, newAuxType in
+                        viewModel.changeFileType(entry: entry, newFileType: newFileType, newAuxType: newAuxType)
+                    }
+                )
             }
         }
     }
@@ -243,6 +253,9 @@ struct DiskBrowserPane: View {
             onGetInfo: { entry in
                 viewModel.showFileInfo(entry)
             },
+            onChangeFileType: { entry in
+                viewModel.showChangeFileType(entry)
+            },
             onCopy: { entry in
                 focusManager.setActivePane(paneId)
                 if !viewModel.isSelected(entry) {
@@ -401,7 +414,7 @@ struct DiskBrowserPane: View {
                             print("📂 File URL: \(url.path)")
                             
                             // Check if it's a disk image to open
-                            if ["po", "2mg", "hdv", "woz"].contains(url.pathExtension.lowercased()) {
+                            if ["po", "2mg", "hdv", "dsk", "do"].contains(url.pathExtension.lowercased()) {
                                 print("💿 Opening disk image")
                                 viewModel.loadDiskImage(from: url)
                             } else {

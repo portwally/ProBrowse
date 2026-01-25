@@ -17,7 +17,9 @@ class DiskPaneViewModel: ObservableObject {
     @Published var showingFilePicker = false
     @Published var showingFileInfo = false
     @Published var fileInfoEntry: DiskCatalogEntry?
-    
+    @Published var showingChangeFileType = false
+    @Published var changeFileTypeEntry: DiskCatalogEntry?
+
     // Navigation state
     @Published var currentDirectory: DiskCatalogEntry?
     @Published var navigationPath: [DiskCatalogEntry] = []
@@ -993,7 +995,56 @@ class DiskPaneViewModel: ObservableObject {
         fileInfoEntry = entry
         showingFileInfo = true
     }
-    
+
+    // MARK: - Change File Type
+
+    func showChangeFileType(_ entry: DiskCatalogEntry) {
+        // Only allow changing file type for non-directories on ProDOS disks
+        guard !entry.isDirectory else {
+            print("Cannot change file type for directories")
+            return
+        }
+
+        guard !isDOS33 && !isUCSDPascal else {
+            print("File type change only supported on ProDOS disks")
+            return
+        }
+
+        changeFileTypeEntry = entry
+        showingChangeFileType = true
+    }
+
+    func changeFileType(entry: DiskCatalogEntry, newFileType: UInt8, newAuxType: UInt16) {
+        guard let diskImagePath = diskImagePath else {
+            print("No disk image loaded")
+            return
+        }
+
+        ProDOSWriter.shared.setFileType(
+            diskImagePath: diskImagePath,
+            fileName: entry.name,
+            fileType: newFileType,
+            auxType: newAuxType
+        ) { success, message in
+            if success {
+                print("File type changed to $\(String(format: "%02X", newFileType)), aux $\(String(format: "%04X", newAuxType))")
+                // Reload disk image to show new file type
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    self.loadDiskImage(from: diskImagePath)
+                }
+            } else {
+                print("Failed to change file type: \(message)")
+                DispatchQueue.main.async {
+                    let errorAlert = NSAlert()
+                    errorAlert.messageText = "Failed to Change File Type"
+                    errorAlert.informativeText = message
+                    errorAlert.alertStyle = .warning
+                    errorAlert.runModal()
+                }
+            }
+        }
+    }
+
     // MARK: - Copy/Cut/Paste
     
     func copySelected() {

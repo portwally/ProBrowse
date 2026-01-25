@@ -1,0 +1,466 @@
+//
+//  HelpWindow.swift
+//  ProBrowse
+//
+//  Help documentation window with sidebar navigation
+//
+
+import SwiftUI
+
+// MARK: - Help Topic Model
+
+enum HelpTopic: String, CaseIterable, Identifiable {
+    case overview = "Overview"
+    case formats = "Disk Formats"
+    case fileOperations = "File Operations"
+    case fileTypes = "File Types"
+    case shortcuts = "Keyboard Shortcuts"
+    case graphics = "Graphics Preview"
+    case troubleshooting = "Troubleshooting"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .overview: return "house"
+        case .formats: return "opticaldiscdrive"
+        case .fileOperations: return "doc.on.doc"
+        case .fileTypes: return "tag"
+        case .shortcuts: return "keyboard"
+        case .graphics: return "photo"
+        case .troubleshooting: return "wrench.and.screwdriver"
+        }
+    }
+}
+
+// MARK: - Help Window View
+
+struct HelpWindow: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedTopic: HelpTopic = .overview
+
+    var body: some View {
+        NavigationSplitView {
+            // Sidebar
+            List(HelpTopic.allCases, selection: $selectedTopic) { topic in
+                Label(topic.rawValue, systemImage: topic.icon)
+                    .tag(topic)
+            }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 250)
+        } detail: {
+            // Detail View
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    helpContent(for: selectedTopic)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 700, height: 500)
+        .navigationTitle("ProBrowse Help")
+    }
+
+    @ViewBuilder
+    private func helpContent(for topic: HelpTopic) -> some View {
+        switch topic {
+        case .overview:
+            OverviewHelpView()
+        case .formats:
+            FormatsHelpView()
+        case .fileOperations:
+            FileOperationsHelpView()
+        case .fileTypes:
+            FileTypesHelpView()
+        case .shortcuts:
+            ShortcutsHelpView()
+        case .graphics:
+            GraphicsHelpView()
+        case .troubleshooting:
+            TroubleshootingHelpView()
+        }
+    }
+}
+
+// MARK: - Overview Help
+
+struct OverviewHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("Getting Started")
+
+            Text("ProBrowse is a dual-pane file manager for Apple II disk images. It allows you to browse, copy, and manage files on vintage disk formats.")
+                .helpBody()
+
+            HelpSection("Quick Start") {
+                HelpBullet("Open disk images in the left and right panes")
+                HelpBullet("Browse directories by double-clicking folders")
+                HelpBullet("Drag and drop files between panes to copy")
+                HelpBullet("Right-click files for more options")
+                HelpBullet("Export files to your Mac via context menu")
+            }
+
+            HelpSection("Interface") {
+                HelpBullet("**Left/Right Panes** - Each pane shows one disk image")
+                HelpBullet("**Header Bar** - Shows volume name, filesystem, and size")
+                HelpBullet("**File List** - Displays files with type, size, and dates")
+                HelpBullet("**Back Button** - Navigate up from subdirectories")
+            }
+
+            HelpNote("Always backup your disk images before making changes!")
+        }
+    }
+}
+
+// MARK: - Formats Help
+
+struct FormatsHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("Supported Disk Formats")
+
+            HelpSection("Disk Image Formats") {
+                FormatRow(ext: ".po", name: "ProDOS Order", read: true, write: true)
+                FormatRow(ext: ".do", name: "DOS Order", read: true, write: true)
+                FormatRow(ext: ".dsk", name: "Generic DSK", read: true, write: true)
+                FormatRow(ext: ".2mg", name: "Universal 2IMG", read: true, write: true)
+                FormatRow(ext: ".hdv", name: "Hard Disk Volume", read: true, write: true)
+                FormatRow(ext: ".vol", name: "UCSD Pascal", read: true, write: false)
+            }
+
+            HelpSection("Archive Formats") {
+                FormatRow(ext: ".shk", name: "ShrinkIt Archive", read: true, write: false)
+                FormatRow(ext: ".sdk", name: "ShrinkIt Disk", read: true, write: false)
+                FormatRow(ext: ".bxy", name: "Binary II + ShrinkIt", read: true, write: false)
+                FormatRow(ext: ".bny", name: "Binary II", read: true, write: false)
+            }
+
+            HelpSection("File Systems") {
+                HelpBullet("**ProDOS** - Full read/write with subdirectories")
+                HelpBullet("**DOS 3.3** - Full read/write support")
+                HelpBullet("**UCSD Pascal** - Read-only")
+            }
+
+            HelpNote("ShrinkIt LZW decompression requires nulib2. Install via: brew install nulib2")
+        }
+    }
+}
+
+// MARK: - File Operations Help
+
+struct FileOperationsHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("File Operations")
+
+            HelpSection("Copying Files") {
+                HelpBullet("**Drag & Drop** - Drag files from one pane to another")
+                HelpBullet("**Copy/Paste** - Use Cmd+C and Cmd+V")
+                HelpBullet("**Cut/Paste** - Use Cmd+X and Cmd+V (moves files)")
+            }
+
+            HelpSection("Managing Files") {
+                HelpBullet("**Rename** - Right-click and select Rename")
+                HelpBullet("**Delete** - Right-click and select Delete, or press Delete key")
+                HelpBullet("**Get Info** - Right-click and select Get Info, or press Cmd+I")
+                HelpBullet("**Export** - Right-click and select Export to Finder")
+            }
+
+            HelpSection("Directories") {
+                HelpBullet("**Navigate** - Double-click to enter a directory")
+                HelpBullet("**Go Back** - Click the back arrow or navigate up")
+                HelpBullet("**Create** - Use File > New Directory (ProDOS only)")
+            }
+
+            HelpSection("Selection") {
+                HelpBullet("**Single** - Click to select one file")
+                HelpBullet("**Multiple** - Cmd+click to add to selection")
+                HelpBullet("**Range** - Shift+click to select a range")
+            }
+        }
+    }
+}
+
+// MARK: - File Types Help
+
+struct FileTypesHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("File Types & Aux Types")
+
+            Text("ProDOS files have a file type (1 byte) and auxiliary type (2 bytes) that identify the file format.")
+                .helpBody()
+
+            HelpSection("Common File Types") {
+                FileTypeRow(type: "$04", name: "TXT", desc: "Text file")
+                FileTypeRow(type: "$06", name: "BIN", desc: "Binary file (aux = load address)")
+                FileTypeRow(type: "$0F", name: "DIR", desc: "Directory")
+                FileTypeRow(type: "$19", name: "ADB", desc: "AppleWorks Database")
+                FileTypeRow(type: "$1A", name: "AWP", desc: "AppleWorks Word Processor")
+                FileTypeRow(type: "$1B", name: "ASP", desc: "AppleWorks Spreadsheet")
+                FileTypeRow(type: "$FC", name: "BAS", desc: "Applesoft BASIC")
+                FileTypeRow(type: "$FF", name: "SYS", desc: "System file")
+            }
+
+            HelpSection("Changing File Types") {
+                HelpBullet("Right-click a file and select \"Change File Type...\"")
+                HelpBullet("Enter new file type in hex (e.g., 06 for BIN)")
+                HelpBullet("Enter new aux type in hex (e.g., 2000 for load address)")
+                HelpBullet("Only available for ProDOS disk images")
+            }
+
+            HelpNote("The aux type meaning depends on the file type. For BIN files, it's the load address. For text files, it's usually 0.")
+        }
+    }
+}
+
+// MARK: - Shortcuts Help
+
+struct ShortcutsHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("Keyboard Shortcuts")
+
+            HelpSection("File Operations") {
+                ShortcutRow(keys: "Cmd + C", action: "Copy selected files")
+                ShortcutRow(keys: "Cmd + X", action: "Cut selected files")
+                ShortcutRow(keys: "Cmd + V", action: "Paste files")
+                ShortcutRow(keys: "Delete", action: "Delete selected files")
+            }
+
+            HelpSection("Navigation") {
+                ShortcutRow(keys: "Cmd + I", action: "Get Info")
+                ShortcutRow(keys: "Double-click", action: "Open directory")
+                ShortcutRow(keys: "Cmd + click", action: "Add to selection")
+                ShortcutRow(keys: "Shift + click", action: "Range selection")
+            }
+
+            HelpSection("Application") {
+                ShortcutRow(keys: "Cmd + N", action: "New disk image")
+                ShortcutRow(keys: "Cmd + O", action: "Open disk image")
+                ShortcutRow(keys: "Cmd + Q", action: "Quit ProBrowse")
+            }
+        }
+    }
+}
+
+// MARK: - Graphics Help
+
+struct GraphicsHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("Graphics Preview")
+
+            Text("ProBrowse can display Apple II graphics files directly in the preview pane.")
+                .helpBody()
+
+            HelpSection("Supported Graphics Formats") {
+                HelpBullet("**HGR** - Hi-Res Graphics (280x192, 6 colors)")
+                HelpBullet("**DHGR** - Double Hi-Res (560x192, 16 colors)")
+                HelpBullet("**SHR** - Super Hi-Res (320x200, 256 colors)")
+                HelpBullet("**PIC/PNT** - Packed graphics files")
+                HelpBullet("**APF** - Apple Preferred Format")
+            }
+
+            HelpSection("Viewing Graphics") {
+                HelpBullet("Select a graphics file to see preview")
+                HelpBullet("Double-click to open in larger view")
+                HelpBullet("Export to save as modern image format")
+            }
+
+            HelpNote("Graphics detection is based on file type and aux type. Some files may not be recognized automatically.")
+        }
+    }
+}
+
+// MARK: - Troubleshooting Help
+
+struct TroubleshootingHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("Troubleshooting")
+
+            HelpSection("Disk Won't Open") {
+                HelpBullet("Check if the file extension is supported")
+                HelpBullet("The disk image may be corrupted")
+                HelpBullet("Try opening in another tool to verify")
+            }
+
+            HelpSection("Can't Write to Disk") {
+                HelpBullet("UCSD Pascal volumes are read-only")
+                HelpBullet("ShrinkIt archives are read-only")
+                HelpBullet("Check if disk image file is locked")
+            }
+
+            HelpSection("ShrinkIt Not Working") {
+                HelpBullet("Install nulib2: brew install nulib2")
+                HelpBullet("Restart ProBrowse after installing")
+                HelpBullet("Check console for error messages")
+            }
+
+            HelpSection("File Type Not Recognized") {
+                HelpBullet("Use \"Change File Type\" to set correct type")
+                HelpBullet("Check ProDOS file type documentation")
+            }
+
+            HelpSection("Getting Help") {
+                HelpBullet("Visit GitHub for issues and updates")
+                HelpBullet("Check the README for latest information")
+                HelpBullet("Report bugs on the GitHub issue tracker")
+            }
+        }
+    }
+}
+
+// MARK: - Helper Views
+
+struct HelpTitle: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.title)
+            .fontWeight(.bold)
+    }
+}
+
+struct HelpSection<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+                .foregroundColor(.primary)
+
+            content
+        }
+    }
+}
+
+struct HelpBullet: View {
+    let text: LocalizedStringKey
+
+    init(_ text: LocalizedStringKey) {
+        self.text = text
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("•")
+                .foregroundColor(.secondary)
+            Text(text)
+                .helpBody()
+        }
+    }
+}
+
+struct HelpNote: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+            Text(text)
+                .font(.callout)
+                .foregroundColor(.secondary)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.1))
+        .cornerRadius(8)
+    }
+}
+
+struct FormatRow: View {
+    let ext: String
+    let name: String
+    let read: Bool
+    let write: Bool
+
+    var body: some View {
+        HStack {
+            Text(ext)
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 50, alignment: .leading)
+            Text(name)
+                .frame(width: 150, alignment: .leading)
+            HStack(spacing: 16) {
+                Label(read ? "Read" : "—", systemImage: read ? "checkmark.circle.fill" : "minus.circle")
+                    .foregroundColor(read ? .green : .secondary)
+                Label(write ? "Write" : "—", systemImage: write ? "checkmark.circle.fill" : "minus.circle")
+                    .foregroundColor(write ? .green : .secondary)
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct FileTypeRow: View {
+    let type: String
+    let name: String
+    let desc: String
+
+    var body: some View {
+        HStack {
+            Text(type)
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 40, alignment: .leading)
+            Text(name)
+                .fontWeight(.medium)
+                .frame(width: 50, alignment: .leading)
+            Text(desc)
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct ShortcutRow: View {
+    let keys: String
+    let action: String
+
+    var body: some View {
+        HStack {
+            Text(keys)
+                .font(.system(.body, design: .monospaced))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.2))
+                .cornerRadius(4)
+                .frame(width: 140, alignment: .leading)
+            Text(action)
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+extension Text {
+    func helpBody() -> some View {
+        self.font(.body)
+            .foregroundColor(.primary)
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    HelpWindow()
+}

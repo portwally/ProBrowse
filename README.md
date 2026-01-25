@@ -33,7 +33,6 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 | Universal 2IMG | `.2mg` | ✅ | ✅ |
 | Hard Disk Volume | `.hdv` | ✅ | ✅ |
 | Generic DSK | `.dsk` | ✅ | ✅ |
-| WOZ | `.woz` | ✅ | ❌ |
 | UCSD Pascal Volume | `.vol` | ✅ | ❌ |
 
 ### Supported Archive Formats
@@ -66,7 +65,6 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 ### Current Limitations
 
 - UCSD Pascal and ShrinkIt archives are read-only
-- WOZ disk images are read-only
 - Beta quality - expect bugs!
 
 ---

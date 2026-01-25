@@ -1481,4 +1481,120 @@ class ProDOSWriter {
         
         print("   ✅ Marked blocks 0-\(systemBlocks - 1) as used")
     }
+
+    // MARK: - Set File Type and Aux Type
+
+    /// Changes the file type and aux type of an existing file on a ProDOS disk
+    func setFileType(diskImagePath: URL, fileName: String, fileType: UInt8, auxType: UInt16, completion: @escaping (Bool, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                var diskData = try Data(contentsOf: diskImagePath)
+                let dataOffset = self.get2MGDataOffset(diskData)
+                let isDOSOrder = self.isDOSOrderFloppy(diskData, diskImagePath: diskImagePath)
+
+                // Find the file in the directory
+                guard let (entryBlockIndex, entryOffset) = self.findFileEntry(diskData: diskData, fileName: fileName, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                    DispatchQueue.main.async {
+                        completion(false, "File '\(fileName)' not found")
+                    }
+                    return
+                }
+
+                // Calculate the actual offset in the disk image
+                let blockData = self.readBlock(diskData, blockIndex: entryBlockIndex, dataOffset: dataOffset, isDOSOrder: isDOSOrder)
+                guard blockData != nil else {
+                    DispatchQueue.main.async {
+                        completion(false, "Failed to read directory block")
+                    }
+                    return
+                }
+
+                // Get the physical offset for writing
+                let physicalOffset: Int
+                if !isDOSOrder {
+                    physicalOffset = dataOffset + (entryBlockIndex * self.BLOCK_SIZE) + entryOffset
+                } else {
+                    // For DOS order, we need to calculate the physical sector offset
+                    let track = entryBlockIndex / 8
+                    let blockInTrack = entryBlockIndex % 8
+                    let sector1 = blockInTrack * 2
+                    let sector2 = sector1 + 1
+
+                    let interleaveMap = track == 0 ? self.dosToProDOSMapTrack0 : self.dosToProDOSMapData
+                    let physicalSector1 = interleaveMap[sector1]
+
+                    // Determine which sector contains the entry
+                    if entryOffset < 256 {
+                        physicalOffset = dataOffset + (track * 16 + physicalSector1) * 256 + entryOffset
+                    } else {
+                        let physicalSector2 = interleaveMap[sector2]
+                        physicalOffset = dataOffset + (track * 16 + physicalSector2) * 256 + (entryOffset - 256)
+                    }
+                }
+
+                // Update file type at offset 0x10 in the entry
+                let fileTypeOffset = physicalOffset + 0x10
+                diskData[fileTypeOffset] = fileType
+
+                // Update aux type at offset 0x1F-0x20 (little-endian)
+                let auxTypeOffset = physicalOffset + 0x1F
+                diskData[auxTypeOffset] = UInt8(auxType & 0xFF)
+                diskData[auxTypeOffset + 1] = UInt8((auxType >> 8) & 0xFF)
+
+                // Write the modified data back
+                try diskData.write(to: diskImagePath)
+
+                DispatchQueue.main.async {
+                    completion(true, "File type changed successfully")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "Error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Finds a file entry in the directory and returns the block index and offset within the block
+    private func findFileEntry(diskData: Data, fileName: String, dataOffset: Int, isDOSOrder: Bool) -> (Int, Int)? {
+        var currentBlock = VOLUME_DIR_BLOCK
+
+        while currentBlock != 0 {
+            guard let blockData = readBlock(diskData, blockIndex: currentBlock, dataOffset: dataOffset, isDOSOrder: isDOSOrder) else {
+                break
+            }
+
+            // Check each entry in this block
+            for entryIdx in 0..<ENTRIES_PER_BLOCK {
+                let entryOffset = 4 + (entryIdx * ENTRY_LENGTH)
+
+                if entryOffset + ENTRY_LENGTH > blockData.count { continue }
+
+                let storageType = (blockData[entryOffset] >> 4) & 0x0F
+                let nameLength = Int(blockData[entryOffset] & 0x0F)
+
+                // Skip deleted, volume header, and empty entries
+                if storageType == 0 || storageType == 0x0F || nameLength == 0 { continue }
+
+                // Get the file name
+                var entryName = ""
+                for i in 0..<nameLength {
+                    let char = blockData[entryOffset + 1 + i]
+                    entryName.append(Character(UnicodeScalar(char)))
+                }
+
+                // Compare names (case-insensitive)
+                if entryName.uppercased() == fileName.uppercased() {
+                    return (currentBlock, entryOffset)
+                }
+            }
+
+            // Get next block in directory chain
+            let nextBlock = Int(blockData[2]) | (Int(blockData[3]) << 8)
+            if nextBlock == currentBlock { break }
+            currentBlock = nextBlock
+        }
+
+        return nil
+    }
 }
