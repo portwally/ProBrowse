@@ -12,27 +12,27 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 
 ### Features
 
-✅ **Dual-Pane Browser** - Work with two disk images simultaneously
-✅ **File Inspector** - View file contents with Cmd+I or context menu
-✅ **Native ProDOS Support** - Read and write ProDOS disk images natively in Swift
-✅ **DOS 3.3 Support** - Full read and write support for DOS 3.3 disk images
-✅ **UCSD Pascal Support** - Read UCSD Pascal volumes (read-only)
-✅ **ShrinkIt Archives** - Browse, extract, and create NuFX archives (.shk, .sdk, .bxy)
-✅ **Binary II Archives** - Read and write Binary II archives (.bny, .bqy)
-✅ **Drag & Drop** - Copy files between disk images or import from Finder
-✅ **Change File Type** - Right-click to modify file type and aux type
-✅ **Complete File Type Database** - Recognizes 200+ ProDOS file types with proper names
-✅ **Graphics Preview** - View Apple II graphics (HGR, DHGR, SHR, APF) directly
-✅ **Font Preview** - Apple IIgs fonts and Apple II hi-res screen fonts
-✅ **Icon Preview** - Apple IIgs Finder icons with 16-color palette and transparency
-✅ **BASIC Viewer** - Syntax-highlighted Applesoft and Integer BASIC listings
-✅ **Merlin Viewer** - 6502 assembler source with syntax highlighting
-✅ **Disassembler** - 6502 and 65816 machine code disassembly
-✅ **AppleWorks Viewer** - Classic and GS word processor, database, and spreadsheet
-✅ **Teach Viewer** - Apple IIgs Teach documents with fonts, styles, and colors
-✅ **Date/Time Support** - Displays creation and modification dates from ProDOS
-✅ **Modern UI** - Clean SwiftUI interface with resizable columns
-✅ **Export Capability** - Extract files to your Mac  
+- ✅ **Dual-Pane Browser** - Work with two disk images simultaneously
+- ✅ **File Inspector** - View file contents with Cmd+I or context menu
+- ✅ **Native ProDOS Support** - Read and write ProDOS disk images natively in Swift
+- ✅ **DOS 3.3 Support** - Full read and write support for DOS 3.3 disk images
+- ✅ **UCSD Pascal Support** - Read UCSD Pascal volumes (read-only)
+- ✅ **ShrinkIt Archives** - Browse, extract, and create NuFX archives (.shk, .sdk, .bxy)
+- ✅ **Binary II Archives** - Read and write Binary II archives (.bny, .bqy)
+- ✅ **Drag & Drop** - Copy files between disk images or import from Finder
+- ✅ **Change File Type** - Right-click to modify file type and aux type
+- ✅ **Complete File Type Database** - Recognizes 200+ ProDOS file types with proper names
+- ✅ **Graphics Preview** - View Apple II graphics (HGR, DHGR, SHR, APF) directly
+- ✅ **Font Preview** - Apple IIgs fonts and Apple II hi-res screen fonts
+- ✅ **Icon Preview** - Apple IIgs Finder icons with 16-color palette and transparency
+- ✅ **BASIC Viewer** - Syntax-highlighted Applesoft and Integer BASIC listings
+- ✅ **Merlin Viewer** - 6502 assembler source with syntax highlighting
+- ✅ **Disassembler** - 6502 and 65816 machine code disassembly
+- ✅ **AppleWorks Viewer** - Classic and GS word processor, database, and spreadsheet
+- ✅ **Teach Viewer** - Apple IIgs Teach documents with fonts, styles, and colors
+- ✅ **Date/Time Support** - Displays creation and modification dates from ProDOS
+- ✅ **Modern UI** - Clean SwiftUI interface with resizable columns
+- ✅ **Export Capability** - Extract files to your Mac  
 
 ### Supported Disk Image Formats
 
