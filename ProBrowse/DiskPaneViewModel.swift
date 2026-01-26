@@ -19,6 +19,8 @@ class DiskPaneViewModel: ObservableObject {
     @Published var fileInfoEntry: DiskCatalogEntry?
     @Published var showingChangeFileType = false
     @Published var changeFileTypeEntry: DiskCatalogEntry?
+    @Published var showingInspector = false
+    @Published var inspectorEntry: DiskCatalogEntry?
 
     // Navigation state
     @Published var currentDirectory: DiskCatalogEntry?
@@ -35,7 +37,36 @@ class DiskPaneViewModel: ObservableObject {
     var canGoBack: Bool {
         return !navigationPath.isEmpty
     }
-    
+
+    /// Find an entry by its UUID
+    func findEntry(by id: UUID) -> DiskCatalogEntry? {
+        return catalog?.allEntries.first { $0.id == id }
+    }
+
+    /// Check if a single non-directory file is selected for inspection
+    var canInspect: Bool {
+        guard selectedEntries.count == 1 else { return false }
+        guard let selectedId = selectedEntries.first,
+              let entry = findEntry(by: selectedId) else { return false }
+        return !entry.isDirectory
+    }
+
+    /// Show inspector for the given entry
+    func showInspector(_ entry: DiskCatalogEntry) {
+        guard !entry.isDirectory else { return }
+        inspectorEntry = entry
+        showingInspector = true
+    }
+
+    /// Show inspector for the currently selected file
+    func inspectSelectedFile() {
+        guard selectedEntries.count == 1,
+              let selectedId = selectedEntries.first,
+              let entry = findEntry(by: selectedId),
+              !entry.isDirectory else { return }
+        showInspector(entry)
+    }
+
     // MARK: - Filesystem Detection Properties
     
     /// Check if the current disk is DOS 3.3 format

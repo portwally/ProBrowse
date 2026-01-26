@@ -460,14 +460,20 @@ class DiskImageParser {
                 let blocksUsed = Int(blockData[entryOffset + 19]) | (Int(blockData[entryOffset + 20]) << 8)
                 let eof = Int(blockData[entryOffset + 21]) | (Int(blockData[entryOffset + 22]) << 8) | (Int(blockData[entryOffset + 23]) << 16)
                 let auxType = Int(blockData[entryOffset + 31]) | (Int(blockData[entryOffset + 32]) << 8)
-                
+
+                // Extended metadata
+                let version = blockData[entryOffset + 28]
+                let minVersion = blockData[entryOffset + 29]
+                let accessFlags = blockData[entryOffset + 30]
+                let headerPointer = Int(blockData[entryOffset + 37]) | (Int(blockData[entryOffset + 38]) << 8)
+
                 let creationDate = decodeProDOSDateTime([blockData[entryOffset + 24], blockData[entryOffset + 25]], [blockData[entryOffset + 26], blockData[entryOffset + 27]])
                 let modificationDate = decodeProDOSDateTime([blockData[entryOffset + 33], blockData[entryOffset + 34]], [blockData[entryOffset + 35], blockData[entryOffset + 36]])
                 
                 if storageType == 0x0D {
                     // Subdirectory
                     let children = readProDOSDirectory(data: data, startBlock: keyPointer, isDOSOrder: isDOSOrder)
-                    
+
                     entries.append(DiskCatalogEntry(
                         name: fileName,
                         fileType: 0x0F,
@@ -482,16 +488,22 @@ class DiskImageParser {
                         isDirectory: true,
                         children: children,
                         modificationDate: modificationDate,
-                        creationDate: creationDate
+                        creationDate: creationDate,
+                        storageType: storageType,
+                        keyPointer: keyPointer,
+                        accessFlags: accessFlags,
+                        version: version,
+                        minVersion: minVersion,
+                        headerPointer: headerPointer
                     ))
                 } else {
                     // File
                     let fileData = extractProDOSFile(data: data, keyBlock: keyPointer, blocksUsed: blocksUsed, eof: eof, storageType: Int(storageType), isDOSOrder: isDOSOrder) ?? Data()
                     let isGraphicsFile = [0x08, 0xC0, 0xC1].contains(fileType)
-                    
+
                     // Get proper file type info from ProDOSFileTypes
                     let fileTypeInfo = ProDOSFileTypeInfo.getFileTypeInfo(fileType: fileType, auxType: UInt16(auxType))
-                    
+
                     entries.append(DiskCatalogEntry(
                         name: fileName,
                         fileType: fileType,
@@ -506,7 +518,13 @@ class DiskImageParser {
                         isDirectory: false,
                         children: nil,
                         modificationDate: modificationDate,
-                        creationDate: creationDate
+                        creationDate: creationDate,
+                        storageType: storageType,
+                        keyPointer: keyPointer,
+                        accessFlags: accessFlags,
+                        version: version,
+                        minVersion: minVersion,
+                        headerPointer: headerPointer
                     ))
                     entriesInThisBlock += 1
                 }
@@ -656,16 +674,19 @@ class DiskImageParser {
                 if sectorCount == 0 || sectorCount > 560 { continue }
                 
                 if let fileData = extractDOS33File(data: data, trackList: trackList, sectorList: sectorList, sectorsPerTrack: sectorsPerTrack, sectorSize: sectorSize) {
-                    
+
                     let isGraphicsFile = (fileType == 0x04 || fileType == 0x42) && fileData.count > 8000
-                    
+
                     // Use sector count from catalog to determine displayed size
                     // This matches what DOS 3.3 CATALOG command shows
                     let displaySize = sectorCount * sectorSize
-                    
+
                     // Get DOS 3.3 specific file type string
                     let fileTypeString = getDOS33FileTypeString(fileType)
-                    
+
+                    // DOS 3.3 access flags: locked = no write/delete
+                    let dos33AccessFlags: UInt8 = locked ? 0x01 : 0xE3  // read-only vs full access
+
                     entries.append(DiskCatalogEntry(
                         name: fileName + (locked ? " 🔒" : ""),
                         fileType: fileType,
@@ -678,7 +699,13 @@ class DiskImageParser {
                         data: fileData,
                         isImage: isGraphicsFile,
                         isDirectory: false,
-                        children: nil
+                        children: nil,
+                        storageType: nil,  // DOS 3.3 doesn't have storage types
+                        keyPointer: trackList * 16 + sectorList,  // T/S list pointer as pseudo-key
+                        accessFlags: dos33AccessFlags,
+                        version: nil,
+                        minVersion: nil,
+                        headerPointer: nil
                     ))
                 }
             }

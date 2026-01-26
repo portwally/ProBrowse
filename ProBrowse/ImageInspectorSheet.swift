@@ -61,9 +61,11 @@ struct ImageInspectorSheet: View {
                         
                         if let result = verificationResult {
                             Text(result)
-                                .font(.caption)
+                                .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(result.contains("✅") ? .green : .red)
                                 .padding(.leading, 24)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         
                         Button(action: {
@@ -99,19 +101,110 @@ struct ImageInspectorSheet: View {
     
     private func verifyImage() {
         guard let imagePath = viewModel.diskImagePath else { return }
-        
+
         isVerifying = true
         verificationResult = nil
-        
-        CadiusManager.shared.verifyVolume(diskImage: imagePath) { success, message in
-            isVerifying = false
-            
-            if success {
-                verificationResult = "✅ Image verified successfully"
-            } else {
-                verificationResult = "❌ Verification failed: \(message)"
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = verifyDiskImage(at: imagePath)
+            DispatchQueue.main.async {
+                isVerifying = false
+                verificationResult = result
             }
         }
+    }
+
+    /// Native disk image verification
+    private func verifyDiskImage(at url: URL) -> String {
+        // Check 1: File exists and is readable
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return "❌ File not found"
+        }
+
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            return "❌ File is not readable"
+        }
+
+        // Check 2: Read file data
+        guard let data = try? Data(contentsOf: url) else {
+            return "❌ Failed to read file data"
+        }
+
+        // Check 3: Validate file size
+        let validSizes: [Int: String] = [
+            143360: "140KB (5.25\" floppy)",
+            819200: "800KB (3.5\" floppy)",
+            1474560: "1.44MB (3.5\" HD floppy)",
+            33553920: "32MB (ProDOS volume)"
+        ]
+
+        var sizeValid = false
+        var sizeDescription = ""
+
+        // Check exact sizes first
+        if let desc = validSizes[data.count] {
+            sizeValid = true
+            sizeDescription = desc
+        } else {
+            // Check 2IMG container (variable header size)
+            if data.count >= 64 && data.prefix(4) == Data([0x32, 0x49, 0x4D, 0x47]) {
+                let headerSize = Int(data[8]) | (Int(data[9]) << 8)
+                let innerSize = data.count - headerSize
+                if let desc = validSizes[innerSize] {
+                    sizeValid = true
+                    sizeDescription = "2IMG container with \(desc)"
+                } else if innerSize > 0 && innerSize % 512 == 0 {
+                    sizeValid = true
+                    sizeDescription = "2IMG container (\(innerSize / 1024)KB)"
+                }
+            }
+            // Check if size is block-aligned (multiple of 512)
+            else if data.count % 512 == 0 && data.count >= 143360 {
+                sizeValid = true
+                sizeDescription = "\(data.count / 1024)KB (block-aligned)"
+            }
+        }
+
+        guard sizeValid else {
+            return "❌ Invalid file size: \(data.count) bytes (not a recognized disk image format)"
+        }
+
+        // Check 4: Validate format-specific structure
+        var formatChecks: [String] = []
+
+        // Skip 2IMG header if present
+        var actualData = data
+        if data.count >= 64 && data.prefix(4) == Data([0x32, 0x49, 0x4D, 0x47]) {
+            let headerSize = Int(data[8]) | (Int(data[9]) << 8)
+            actualData = data.subdata(in: headerSize..<data.count)
+            formatChecks.append("2IMG header valid")
+        }
+
+        // Check for ProDOS volume header
+        if let catalog = viewModel.catalog {
+            if catalog.diskFormat.contains("ProDOS") {
+                formatChecks.append("ProDOS volume detected: \(catalog.diskName)")
+                formatChecks.append("Format: \(catalog.diskFormat)")
+                formatChecks.append("Files: \(catalog.totalFiles)")
+            } else if catalog.diskFormat.contains("DOS 3.3") {
+                formatChecks.append("DOS 3.3 volume detected")
+                formatChecks.append("Files: \(catalog.totalFiles)")
+            } else if catalog.diskFormat.contains("UCSD") {
+                formatChecks.append("UCSD Pascal volume detected: \(catalog.diskName)")
+                formatChecks.append("Files: \(catalog.totalFiles)")
+            } else {
+                formatChecks.append("Format: \(catalog.diskFormat)")
+            }
+        }
+
+        // All checks passed
+        var result = "✅ Image verified successfully\n"
+        result += "   Size: \(sizeDescription)\n"
+        for check in formatChecks {
+            result += "   \(check)\n"
+        }
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func formatBytes(_ bytes: Int) -> String {

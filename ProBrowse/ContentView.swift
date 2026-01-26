@@ -36,10 +36,14 @@ struct ContentView: View {
                     onCreateDirRight: { rightPaneVM.showCreateDirectoryDialog() },
                     onEjectLeft: { leftPaneVM.ejectDisk() },
                     onEjectRight: { rightPaneVM.ejectDisk() },
+                    onInspectLeft: { leftPaneVM.inspectSelectedFile() },
+                    onInspectRight: { rightPaneVM.inspectSelectedFile() },
                     leftSelectionCount: leftPaneVM.selectedEntries.count,
                     rightSelectionCount: rightPaneVM.selectedEntries.count,
                     leftHasDisk: leftPaneVM.catalog != nil,
-                    rightHasDisk: rightPaneVM.catalog != nil
+                    rightHasDisk: rightPaneVM.catalog != nil,
+                    canInspectLeft: leftPaneVM.canInspect,
+                    canInspectRight: rightPaneVM.canInspect
                 )
                 
                 Divider()
@@ -115,6 +119,9 @@ struct ContentView: View {
                     case "v":
                         activeVM.paste(to: targetVM)
                         return nil
+                    case "i":
+                        activeVM.inspectSelectedFile()
+                        return nil
                     default:
                         break
                     }
@@ -139,10 +146,14 @@ struct ToolbarView: View {
     let onCreateDirRight: () -> Void
     let onEjectLeft: () -> Void
     let onEjectRight: () -> Void
+    let onInspectLeft: () -> Void
+    let onInspectRight: () -> Void
     let leftSelectionCount: Int
     let rightSelectionCount: Int
     let leftHasDisk: Bool
     let rightHasDisk: Bool
+    let canInspectLeft: Bool
+    let canInspectRight: Bool
     
     var body: some View {
         HStack(spacing: 0) {
@@ -186,7 +197,15 @@ struct ToolbarView: View {
                     disabled: leftSelectionCount == 0
                 )
                 .help("Export selected files to Finder")
-                
+
+                ToolbarButton(
+                    icon: "doc.text.magnifyingglass",
+                    label: "Inspect",
+                    action: onInspectLeft,
+                    disabled: !canInspectLeft
+                )
+                .help("Inspect selected file (⌘I)")
+
                 if leftSelectionCount > 0 {
                     Text("\(leftSelectionCount)")
                         .font(.caption)
@@ -216,7 +235,15 @@ struct ToolbarView: View {
                         .foregroundColor(.secondary)
                         .padding(.trailing, 4)
                 }
-                
+
+                ToolbarButton(
+                    icon: "doc.text.magnifyingglass",
+                    label: "Inspect",
+                    action: onInspectRight,
+                    disabled: !canInspectRight
+                )
+                .help("Inspect selected file (⌘I)")
+
                 ToolbarButton(
                     icon: "square.and.arrow.up",
                     label: "Export",

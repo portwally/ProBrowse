@@ -25,8 +25,16 @@ struct DiskCatalogEntry: Identifiable, Codable {
     let children: [DiskCatalogEntry]?
     let modificationDate: String?
     let creationDate: String?
-    
-    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, auxType: UInt16 = 0, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?, modificationDate: String? = nil, creationDate: String? = nil) {
+
+    // Extended ProDOS metadata
+    let storageType: UInt8?
+    let keyPointer: Int?
+    let accessFlags: UInt8?
+    let version: UInt8?
+    let minVersion: UInt8?
+    let headerPointer: Int?  // VDH/SDH pointer for directories
+
+    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, auxType: UInt16 = 0, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?, modificationDate: String? = nil, creationDate: String? = nil, storageType: UInt8? = nil, keyPointer: Int? = nil, accessFlags: UInt8? = nil, version: UInt8? = nil, minVersion: UInt8? = nil, headerPointer: Int? = nil) {
         self.id = id
         self.name = name
         self.fileType = fileType
@@ -42,6 +50,41 @@ struct DiskCatalogEntry: Identifiable, Codable {
         self.children = children
         self.modificationDate = modificationDate
         self.creationDate = creationDate
+        self.storageType = storageType
+        self.keyPointer = keyPointer
+        self.accessFlags = accessFlags
+        self.version = version
+        self.minVersion = minVersion
+        self.headerPointer = headerPointer
+    }
+
+    // MARK: - Storage Type Descriptions
+
+    var storageTypeDescription: String {
+        guard let st = storageType else { return "Unknown" }
+        switch st {
+        case 0x00: return "Deleted"
+        case 0x01: return "Seedling"
+        case 0x02: return "Sapling"
+        case 0x03: return "Tree"
+        case 0x0D: return "Subdirectory"
+        case 0x0E: return "Subdirectory Header"
+        case 0x0F: return "Volume Directory Header"
+        default: return String(format: "$%02X", st)
+        }
+    }
+
+    // MARK: - Access Flags Description
+
+    var accessFlagsDescription: String {
+        guard let flags = accessFlags else { return "Unknown" }
+        var parts: [String] = []
+        if flags & 0x80 != 0 { parts.append("destroy") }
+        if flags & 0x40 != 0 { parts.append("rename") }
+        if flags & 0x20 != 0 { parts.append("changed") }
+        if flags & 0x02 != 0 { parts.append("write") }
+        if flags & 0x01 != 0 { parts.append("read") }
+        return parts.isEmpty ? "none" : parts.joined(separator: ", ")
     }
     
     var sizeString: String {

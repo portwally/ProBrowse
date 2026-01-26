@@ -12,16 +12,20 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 
 ### Features
 
-✅ **Dual-Pane Browser** - Work with two disk images simultaneously  
-✅ **Native ProDOS Support** - Read and write ProDOS disk images natively in Swift  
-✅ **DOS 3.3 Support** - Full read and write support for DOS 3.3 disk images  
-✅ **UCSD Pascal Support** - Read UCSD Pascal volumes (read-only)  
-✅ **ShrinkIt Archives** - Browse and extract NuFX archives (.shk, .sdk, .bxy)  
-✅ **Drag & Drop** - Copy files between disk images with ease  
-✅ **Complete File Type Database** - Recognizes 200+ ProDOS file types with proper names  
-✅ **Graphics Preview** - View Apple II graphics (HGR, DHGR, SHR, APF) directly  
-✅ **Date/Time Support** - Displays creation and modification dates from ProDOS  
-✅ **Modern UI** - Clean SwiftUI interface with resizable columns  
+✅ **Dual-Pane Browser** - Work with two disk images simultaneously
+✅ **File Inspector** - View file contents with Cmd+I (BASIC, graphics, fonts, icons, hex dump)
+✅ **Native ProDOS Support** - Read and write ProDOS disk images natively in Swift
+✅ **DOS 3.3 Support** - Full read and write support for DOS 3.3 disk images
+✅ **UCSD Pascal Support** - Read UCSD Pascal volumes (read-only)
+✅ **ShrinkIt Archives** - Browse and extract NuFX archives (.shk, .sdk, .bxy)
+✅ **Drag & Drop** - Copy files between disk images with ease
+✅ **Complete File Type Database** - Recognizes 200+ ProDOS file types with proper names
+✅ **Graphics Preview** - View Apple II graphics (HGR, DHGR, SHR, APF) directly
+✅ **Font Preview** - Apple IIgs bitmap fonts with sample text and character grid
+✅ **Icon Preview** - Apple IIgs Finder icons with 16-color palette and transparency
+✅ **BASIC Viewer** - Syntax-highlighted Applesoft and Integer BASIC listings
+✅ **Date/Time Support** - Displays creation and modification dates from ProDOS
+✅ **Modern UI** - Clean SwiftUI interface with resizable columns
 ✅ **Export Capability** - Extract files to your Mac  
 
 ### Supported Disk Image Formats
@@ -73,9 +77,10 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 
 1. Open two disk images (left and right panes)
 2. Browse files with full directory support
-3. Drag & drop files between images
-4. Export files to your Mac
-5. View Apple II graphics inline
+3. Press **Cmd+I** to inspect any file (view BASIC listings, graphics, hex dump)
+4. Drag & drop files between images
+5. Export files to your Mac
+6. View Apple II graphics inline
 
 ## Building
 

@@ -76,6 +76,11 @@ struct DiskBrowserPane: View {
                 )
             }
         }
+        .sheet(isPresented: $viewModel.showingInspector) {
+            if let entry = viewModel.inspectorEntry {
+                FileInspectorSheet(entry: entry)
+            }
+        }
     }
     
     // MARK: - Header View
@@ -255,6 +260,9 @@ struct DiskBrowserPane: View {
             },
             onChangeFileType: { entry in
                 viewModel.showChangeFileType(entry)
+            },
+            onInspect: { entry in
+                viewModel.showInspector(entry)
             },
             onCopy: { entry in
                 focusManager.setActivePane(paneId)

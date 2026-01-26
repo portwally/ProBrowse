@@ -15,6 +15,7 @@ struct CatalogEntryRow: View {
     let onRename: ((DiskCatalogEntry) -> Void)?
     let onGetInfo: ((DiskCatalogEntry) -> Void)?
     let onChangeFileType: ((DiskCatalogEntry) -> Void)?
+    let onInspect: ((DiskCatalogEntry) -> Void)?
     let onCopy: ((DiskCatalogEntry) -> Void)?
     let onCut: ((DiskCatalogEntry) -> Void)?
     let onPaste: (() -> Void)?
@@ -26,7 +27,7 @@ struct CatalogEntryRow: View {
     
     @State private var isExpanded: Bool
     
-    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, onDoubleClick: ((DiskCatalogEntry) -> Void)? = nil, onRename: ((DiskCatalogEntry) -> Void)? = nil, onGetInfo: ((DiskCatalogEntry) -> Void)? = nil, onChangeFileType: ((DiskCatalogEntry) -> Void)? = nil, onCopy: ((DiskCatalogEntry) -> Void)? = nil, onCut: ((DiskCatalogEntry) -> Void)? = nil, onPaste: (() -> Void)? = nil, onExport: ((DiskCatalogEntry) -> Void)? = nil, onDelete: ((DiskCatalogEntry) -> Void)? = nil, level: Int, expandAllTrigger: Bool, columnWidths: ColumnWidths) {
+    init(entry: DiskCatalogEntry, isSelected: @escaping (DiskCatalogEntry) -> Bool, onToggle: @escaping (DiskCatalogEntry, Bool, Bool) -> Void, onDoubleClick: ((DiskCatalogEntry) -> Void)? = nil, onRename: ((DiskCatalogEntry) -> Void)? = nil, onGetInfo: ((DiskCatalogEntry) -> Void)? = nil, onChangeFileType: ((DiskCatalogEntry) -> Void)? = nil, onInspect: ((DiskCatalogEntry) -> Void)? = nil, onCopy: ((DiskCatalogEntry) -> Void)? = nil, onCut: ((DiskCatalogEntry) -> Void)? = nil, onPaste: (() -> Void)? = nil, onExport: ((DiskCatalogEntry) -> Void)? = nil, onDelete: ((DiskCatalogEntry) -> Void)? = nil, level: Int, expandAllTrigger: Bool, columnWidths: ColumnWidths) {
         self.entry = entry
         self.isSelected = isSelected
         self.onToggle = onToggle
@@ -34,6 +35,7 @@ struct CatalogEntryRow: View {
         self.onRename = onRename
         self.onGetInfo = onGetInfo
         self.onChangeFileType = onChangeFileType
+        self.onInspect = onInspect
         self.onCopy = onCopy
         self.onCut = onCut
         self.onPaste = onPaste
@@ -58,6 +60,7 @@ struct CatalogEntryRow: View {
                 onRename: onRename,
                 onGetInfo: onGetInfo,
                 onChangeFileType: onChangeFileType,
+                onInspect: onInspect,
                 onCopy: onCopy,
                 onCut: onCut,
                 onPaste: onPaste,
@@ -77,6 +80,7 @@ struct CatalogEntryRow: View {
                         onRename: onRename,
                         onGetInfo: onGetInfo,
                         onChangeFileType: onChangeFileType,
+                        onInspect: onInspect,
                         onCopy: onCopy,
                         onCut: onCut,
                         onPaste: onPaste,
@@ -109,6 +113,7 @@ struct CatalogEntryRowContent: View {
     let onRename: ((DiskCatalogEntry) -> Void)?
     let onGetInfo: ((DiskCatalogEntry) -> Void)?
     let onChangeFileType: ((DiskCatalogEntry) -> Void)?
+    let onInspect: ((DiskCatalogEntry) -> Void)?
     let onCopy: ((DiskCatalogEntry) -> Void)?
     let onCut: ((DiskCatalogEntry) -> Void)?
     let onPaste: (() -> Void)?
@@ -279,6 +284,12 @@ struct CatalogEntryRowContent: View {
                 Button("Change File Type...") {
                     if let onChangeFileType = onChangeFileType {
                         onChangeFileType(entry)
+                    }
+                }
+
+                Button("Inspect File...") {
+                    if let onInspect = onInspect {
+                        onInspect(entry)
                     }
                 }
             }

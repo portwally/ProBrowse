@@ -13,6 +13,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     case overview = "Overview"
     case formats = "Disk Formats"
     case fileOperations = "File Operations"
+    case fileInspector = "File Inspector"
     case fileTypes = "File Types"
     case shortcuts = "Keyboard Shortcuts"
     case graphics = "Graphics Preview"
@@ -25,6 +26,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .overview: return "house"
         case .formats: return "opticaldiscdrive"
         case .fileOperations: return "doc.on.doc"
+        case .fileInspector: return "doc.text.magnifyingglass"
         case .fileTypes: return "tag"
         case .shortcuts: return "keyboard"
         case .graphics: return "photo"
@@ -71,6 +73,8 @@ struct HelpWindow: View {
             FormatsHelpView()
         case .fileOperations:
             FileOperationsHelpView()
+        case .fileInspector:
+            FileInspectorHelpView()
         case .fileTypes:
             FileTypesHelpView()
         case .shortcuts:
@@ -98,6 +102,7 @@ struct OverviewHelpView: View {
                 HelpBullet("Browse directories by double-clicking folders")
                 HelpBullet("Drag and drop files between panes to copy")
                 HelpBullet("Right-click files for more options")
+                HelpBullet("Press **Cmd+I** to inspect file contents (BASIC, graphics, hex)")
                 HelpBullet("Export files to your Mac via context menu")
             }
 
@@ -182,6 +187,56 @@ struct FileOperationsHelpView: View {
     }
 }
 
+// MARK: - File Inspector Help
+
+struct FileInspectorHelpView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HelpTitle("File Inspector")
+
+            Text("The File Inspector provides a comprehensive view of any file's contents with three tabs: Content, Hex, and Info.")
+                .helpBody()
+
+            HelpSection("Opening the Inspector") {
+                HelpBullet("Right-click a file and select \"Inspect File...\"")
+                HelpBullet("Or press **Cmd+I** with a file selected")
+                HelpBullet("Or click the magnifying glass icon in the toolbar")
+            }
+
+            HelpSection("Content Tab") {
+                HelpBullet("**BASIC Programs** - Detokenized listing with syntax highlighting")
+                HelpBullet("**Text Files** - Plain text display")
+                HelpBullet("**Graphics** - HGR, DHGR, SHR, and packed formats with 1x/2x/3x scaling")
+                HelpBullet("**Fonts** - Apple IIgs font preview with sample text and character grid")
+                HelpBullet("**Icons** - Apple IIgs icon files with 16-color palette and transparency")
+                HelpBullet("**Other Files** - Hex dump with ASCII sidebar")
+            }
+
+            HelpSection("BASIC Listing Features") {
+                HelpBullet("Keywords highlighted in cyan")
+                HelpBullet("String literals in green")
+                HelpBullet("REM comments in gray italic")
+                HelpBullet("Line numbers in yellow")
+            }
+
+            HelpSection("Hex Tab") {
+                HelpBullet("16 bytes per line with offset column")
+                HelpBullet("ASCII sidebar shows printable characters")
+                HelpBullet("Supports files up to 64KB display")
+            }
+
+            HelpSection("Info Tab") {
+                HelpBullet("**File** - Name, type, aux type, and size")
+                HelpBullet("**Catalog Entry** - Storage type, key pointer, access flags")
+                HelpBullet("**Dates** - Creation and modification dates")
+                HelpBullet("**Data** - Blocks used, EOF, and load address")
+            }
+
+            HelpNote("The Info tab shows detailed ProDOS metadata including storage type (Seedling, Sapling, Tree) and access permissions.")
+        }
+    }
+}
+
 // MARK: - File Types Help
 
 struct FileTypesHelpView: View {
@@ -230,7 +285,7 @@ struct ShortcutsHelpView: View {
             }
 
             HelpSection("Navigation") {
-                ShortcutRow(keys: "Cmd + I", action: "Get Info")
+                ShortcutRow(keys: "Cmd + I", action: "Inspect File")
                 ShortcutRow(keys: "Double-click", action: "Open directory")
                 ShortcutRow(keys: "Cmd + click", action: "Add to selection")
                 ShortcutRow(keys: "Shift + click", action: "Range selection")
