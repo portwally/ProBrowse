@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct FileInspectorSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -37,10 +38,15 @@ struct FileInspectorSheet: View {
 
                 Spacer()
 
-                // Placeholder for symmetry
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundColor(.clear)
+                // Print button
+                Button(action: { printContent() }) {
+                    Image(systemName: "printer")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Print (Cmd+P)")
+                .keyboardShortcut("p", modifiers: .command)
             }
             .padding()
             .background(Color(NSColor.controlBackgroundColor))
@@ -90,6 +96,331 @@ struct FileInspectorSheet: View {
         }
         .frame(width: 700, height: 800)
     }
+
+    // MARK: - Print Functionality
+
+    private func printContent() {
+        let printView: NSView
+
+        switch selectedTab {
+        case .content:
+            printView = createContentPrintView()
+        case .hex:
+            printView = createHexPrintView()
+        case .info:
+            printView = createInfoPrintView()
+        }
+
+        let printInfo = NSPrintInfo.shared
+        printInfo.horizontalPagination = .automatic
+        printInfo.verticalPagination = .automatic
+        printInfo.isHorizontallyCentered = true
+        printInfo.isVerticallyCentered = false
+        printInfo.leftMargin = 50
+        printInfo.rightMargin = 50
+        printInfo.topMargin = 50
+        printInfo.bottomMargin = 50
+
+        let printOperation = NSPrintOperation(view: printView, printInfo: printInfo)
+        printOperation.showsPrintPanel = true
+        printOperation.showsProgressPanel = true
+        printOperation.jobTitle = entry.name
+
+        printOperation.run()
+    }
+
+    private func createContentPrintView() -> NSView {
+        let contentType = detectContentType()
+
+        switch contentType {
+        case .text:
+            return createTextPrintView(convertAppleIIText(entry.data))
+        case .applesoftBasic:
+            let listing = ApplesoftDetokenizer.detokenize(entry.data)
+            return createBasicPrintView(listing, title: "Applesoft BASIC: \(entry.name)")
+        case .integerBasic:
+            let listing = IntegerBasicDetokenizer.detokenize(entry.data)
+            return createBasicPrintView(listing, title: "Integer BASIC: \(entry.name)")
+        case .graphics:
+            return createGraphicsPrintView()
+        case .font:
+            return createFontPrintView()
+        case .icon:
+            return createIconPrintView()
+        case .appleWorks:
+            return createAppleWorksPrintView()
+        case .teach:
+            return createTeachPrintView()
+        case .binary:
+            return createHexPrintView()
+        }
+    }
+
+    private func createTextPrintView(_ text: String) -> NSView {
+        return PrintableTextView(text: text)
+    }
+
+    private func createBasicPrintView(_ listing: String, title: String) -> NSView {
+        let text = "\(title)\n\n\(listing)"
+        return createTextPrintView(text)
+    }
+
+    private func createGraphicsPrintView() -> NSView {
+        // Try to decode the image
+        if let image = decodeGraphicsImage() {
+            let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: image.size.width, height: image.size.height))
+            imageView.image = image
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            return imageView
+        }
+        return createTextPrintView("Unable to decode graphics")
+    }
+
+    private func decodeGraphicsImage() -> NSImage? {
+        // Try various graphics decoders
+        let result = AppleIIDecoder.detectAndDecode(data: entry.data, fileType: entry.fileType, auxType: entry.auxType)
+        if let cgImage = result.image {
+            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        }
+        return nil
+    }
+
+    private func createFontPrintView() -> NSView {
+        // Create a simple text representation of font info
+        var text = "Apple IIgs Font: \(entry.name)\n\n"
+        if let fontFile = AppleIIgsFontDecoder.decode(data: entry.data) {
+            text += "Font Height: \(fontFile.fontHeight)\n"
+            text += "First Char: \(fontFile.firstChar)\n"
+            text += "Last Char: \(fontFile.lastChar)\n"
+            text += "Max Width: \(fontFile.maxWidth)\n"
+            text += "Ascent: \(fontFile.ascent)\n"
+            text += "Descent: \(fontFile.descent)\n"
+        }
+        return createTextPrintView(text)
+    }
+
+    private func createIconPrintView() -> NSView {
+        // Decode and render icons
+        if let iconFile = AppleIIgsIconDecoder.decode(data: entry.data),
+           let firstEntry = iconFile.entries.first,
+           let largeIcon = firstEntry.largeIcon,
+           let cgImage = AppleIIgsIconDecoder.renderIcon(largeIcon, scale: 4) {
+            let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: nsImage.size.width, height: nsImage.size.height))
+            imageView.image = nsImage
+            return imageView
+        }
+        return createTextPrintView("Unable to decode icons")
+    }
+
+    private func createAppleWorksPrintView() -> NSView {
+        if let doc = AppleWorksDecoder.decode(data: entry.data, fileType: entry.fileType, auxType: entry.auxType) {
+            return createTextPrintView("AppleWorks Document: \(entry.name)\n\n\(doc.plainText)")
+        }
+        return createTextPrintView("Unable to decode AppleWorks document")
+    }
+
+    private func createTeachPrintView() -> NSView {
+        if let doc = TeachDecoder.decode(dataFork: entry.data, resourceFork: entry.resourceForkData) {
+            return createTextPrintView("Teach Document: \(entry.name)\n\n\(doc.plainText)")
+        }
+        return createTextPrintView("Unable to decode Teach document")
+    }
+
+    private func createHexPrintView() -> NSView {
+        var hexText = "Hex Dump: \(entry.name)\n\n"
+        let bytesPerLine = 16
+        let data = entry.data
+
+        for lineStart in stride(from: 0, to: min(data.count, 65536), by: bytesPerLine) {
+            let lineEnd = min(lineStart + bytesPerLine, data.count)
+            let lineData = data[lineStart..<lineEnd]
+
+            // Offset
+            hexText += String(format: "%08X  ", lineStart)
+
+            // Hex bytes
+            for (index, byte) in lineData.enumerated() {
+                hexText += String(format: "%02X ", byte)
+                if index == 7 { hexText += " " }
+            }
+
+            // Padding if short line
+            let missing = bytesPerLine - lineData.count
+            for i in 0..<missing {
+                hexText += "   "
+                if lineData.count + i == 7 { hexText += " " }
+            }
+
+            hexText += " |"
+
+            // ASCII
+            for byte in lineData {
+                let char = (byte >= 0x20 && byte < 0x7F) ? Character(UnicodeScalar(byte)) : "."
+                hexText += String(char)
+            }
+
+            hexText += "|\n"
+        }
+
+        if data.count > 65536 {
+            hexText += "\n... (truncated at 64KB)"
+        }
+
+        return createTextPrintView(hexText)
+    }
+
+    private func createInfoPrintView() -> NSView {
+        var infoText = "File Information: \(entry.name)\n\n"
+        infoText += "File Type: \(entry.fileTypeString) ($\(String(format: "%02X", entry.fileType)))\n"
+        infoText += "Aux Type: $\(String(format: "%04X", entry.auxType))\n"
+        infoText += "Size: \(entry.size) bytes\n"
+        if let blocks = entry.blocks {
+            infoText += "Blocks: \(blocks)\n"
+        }
+        if let storageType = entry.storageType {
+            infoText += "Storage Type: \(entry.storageTypeDescription) ($\(String(format: "%02X", storageType)))\n"
+        }
+        if let accessFlags = entry.accessFlags {
+            infoText += "Access: \(entry.accessFlagsDescription) ($\(String(format: "%02X", accessFlags)))\n"
+        }
+        if let modDate = entry.modificationDate {
+            infoText += "Modified: \(modDate)\n"
+        }
+        if let createDate = entry.creationDate {
+            infoText += "Created: \(createDate)\n"
+        }
+
+        return createTextPrintView(infoText)
+    }
+
+    // MARK: - Apple II Text Conversion
+
+    /// Convert Apple II text data to a printable string
+    /// Handles high-ASCII (bit 7 set) and converts CR to newline
+    private func convertAppleIIText(_ data: Data) -> String {
+        var result = ""
+        for byte in data {
+            // Handle Apple II high-ASCII (high bit set for normal text)
+            let lowByte = byte & 0x7F
+            if lowByte >= 0x20 && lowByte < 0x7F {
+                result += String(UnicodeScalar(lowByte))
+            } else if lowByte == 0x0D {
+                result += "\n"  // Convert CR to newline
+            } else if lowByte == 0x0A {
+                // Skip LF (often follows CR)
+            } else if lowByte == 0x00 {
+                // End of text in some formats
+                break
+            } else {
+                result += "."  // Non-printable character
+            }
+        }
+        return result
+    }
+
+    // MARK: - Content Type Detection for Printing
+
+    private enum PrintContentType {
+        case text
+        case applesoftBasic
+        case integerBasic
+        case graphics
+        case font
+        case icon
+        case appleWorks
+        case teach
+        case binary
+    }
+
+    private func detectContentType() -> PrintContentType {
+        // Check by ProDOS file type
+        switch entry.fileType {
+        case 0x04:  // TXT
+            return .text
+        case 0xFC:  // BAS (Applesoft)
+            return .applesoftBasic
+        case 0xFA:  // INT (Integer BASIC)
+            return .integerBasic
+        case 0x19:  // ADB (AppleWorks Database)
+            return .appleWorks
+        case 0x1A:  // AWP (AppleWorks Word Processor)
+            return .appleWorks
+        case 0x1B:  // ASP (AppleWorks Spreadsheet)
+            return .appleWorks
+        case 0x50:  // GWP - check aux type for AppleWorks GS or Teach
+            if entry.auxType == 0x8010 {
+                return .appleWorks  // AppleWorks GS Word Processor
+            } else if entry.auxType == 0x5445 {
+                return .teach  // Teach document ('TE')
+            }
+            return .binary
+        case 0x06:  // BIN - check if graphics by size
+            if isLikelyGraphics() {
+                return .graphics
+            }
+            return .binary
+        case 0x08:  // FOT (Apple II Graphics)
+            return .graphics
+        case 0xC0:  // PNT (Packed SHR)
+            return .graphics
+        case 0xC1:  // PIC (SHR)
+            return .graphics
+        case 0xC8:  // FNT (Apple IIgs Font)
+            return .font
+        case 0xCA:  // ICN (Apple IIgs Icons)
+            return .icon
+        case 0xB3:  // APP - Some SHR files use this type
+            if isLikelyGraphics() {
+                return .graphics
+            }
+            return .binary
+        default:
+            // Check if it looks like text
+            if isLikelyText() {
+                return .text
+            }
+            return .binary
+        }
+    }
+
+    private func isLikelyGraphics() -> Bool {
+        let size = entry.data.count
+        let auxType = entry.auxType
+
+        // Check aux type hints for graphics load addresses
+        if auxType == 0x2000 || auxType == 0x4000 {
+            // HGR load addresses - accept HGR size range
+            if size >= 8184 && size <= 8200 {
+                return true
+            }
+        }
+
+        // Common Apple II graphics sizes
+        return (size >= 8184 && size <= 8200) ||  // HGR (8192 typical, 8184 common)
+               size == 16384 ||                    // DHGR
+               (size >= 32000 && size <= 32768) || // SHR
+               (size >= 38400 && size <= 39000)    // 3200-color SHR
+    }
+
+    private func isLikelyText() -> Bool {
+        guard entry.data.count > 0 else { return false }
+
+        // Sample first 256 bytes
+        let sampleSize = min(256, entry.data.count)
+        var printableCount = 0
+
+        for i in 0..<sampleSize {
+            let byte = entry.data[i]
+            let lowByte = byte & 0x7F  // Handle high-ASCII
+            if (lowByte >= 0x20 && lowByte < 0x7F) || lowByte == 0x0D || lowByte == 0x0A {
+                printableCount += 1
+            }
+        }
+
+        // If more than 80% is printable, treat as text
+        return Double(printableCount) / Double(sampleSize) > 0.8
+    }
 }
 
 // MARK: - File Content View
@@ -112,6 +443,10 @@ struct FileContentView: View {
                 FontPreviewView(entry: entry)
             case .icon:
                 IconPreviewView(entry: entry)
+            case .appleWorks:
+                AppleWorksView(entry: entry)
+            case .teach:
+                TeachView(entry: entry)
             case .binary:
                 HexDumpView(data: entry.data)
             }
@@ -125,6 +460,8 @@ struct FileContentView: View {
         case graphics
         case font
         case icon
+        case appleWorks
+        case teach
         case binary
     }
 
@@ -137,6 +474,19 @@ struct FileContentView: View {
             return .applesoftBasic
         case 0xFA:  // INT (Integer BASIC)
             return .integerBasic
+        case 0x19:  // ADB (AppleWorks Database)
+            return .appleWorks
+        case 0x1A:  // AWP (AppleWorks Word Processor)
+            return .appleWorks
+        case 0x1B:  // ASP (AppleWorks Spreadsheet)
+            return .appleWorks
+        case 0x50:  // GWP - check aux type for AppleWorks GS or Teach
+            if entry.auxType == 0x8010 {
+                return .appleWorks  // AppleWorks GS Word Processor
+            } else if entry.auxType == 0x5445 {
+                return .teach  // Teach document ('TE')
+            }
+            return .binary
         case 0x06:  // BIN - check if graphics by size
             if isLikelyGraphics() {
                 return .graphics
@@ -631,6 +981,124 @@ struct FileInfoHexRow: View {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         return formatter.string(from: NSNumber(value: hex)) ?? "\(hex)"
+    }
+}
+
+// MARK: - Printable Text View
+
+/// Custom NSView for printing text without pagination issues
+/// Uses CoreText for direct text rendering with proper page breaks
+class PrintableTextView: NSView {
+    private let text: String
+    private let font: NSFont
+    private let textColor: NSColor
+    private let pageWidth: CGFloat = 500
+    private let pageHeight: CGFloat = 700
+    private let margin: CGFloat = 20
+
+    private var attributedString: NSAttributedString!
+    private var framesetter: CTFramesetter!
+    private var pageRanges: [CFRange] = []
+
+    init(text: String, font: NSFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular), textColor: NSColor = .black) {
+        self.text = text
+        self.font = font
+        self.textColor = textColor
+        super.init(frame: .zero)
+
+        setupText()
+        calculatePages()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setupText() {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+            .paragraphStyle: paragraphStyle
+        ]
+        attributedString = NSAttributedString(string: text, attributes: attributes)
+        framesetter = CTFramesetterCreateWithAttributedString(attributedString as CFAttributedString)
+    }
+
+    private func calculatePages() {
+        pageRanges.removeAll()
+
+        let textLength = attributedString.length
+        var currentIndex = 0
+        let contentWidth = pageWidth - (margin * 2)
+        let contentHeight = pageHeight - (margin * 2)
+
+        while currentIndex < textLength {
+            let path = CGPath(rect: CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight), transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(currentIndex, 0), path, nil)
+            let frameRange = CTFrameGetVisibleStringRange(frame)
+
+            if frameRange.length == 0 {
+                break  // Prevent infinite loop
+            }
+
+            pageRanges.append(CFRangeMake(currentIndex, frameRange.length))
+            currentIndex += frameRange.length
+        }
+
+        // Set frame to accommodate all pages
+        let totalHeight = CGFloat(max(1, pageRanges.count)) * pageHeight
+        self.frame = NSRect(x: 0, y: 0, width: pageWidth, height: totalHeight)
+    }
+
+    // MARK: - Pagination for Printing
+
+    override func knowsPageRange(_ range: NSRangePointer) -> Bool {
+        range.pointee = NSRange(location: 1, length: max(1, pageRanges.count))
+        return true
+    }
+
+    override func rectForPage(_ page: Int) -> NSRect {
+        let pageIndex = page - 1
+        let y = CGFloat(pageRanges.count - 1 - pageIndex) * pageHeight
+        return NSRect(x: 0, y: y, width: pageWidth, height: pageHeight)
+    }
+
+    // MARK: - Drawing
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+
+        // Fill background white
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(dirtyRect)
+
+        let contentWidth = pageWidth - (margin * 2)
+        let contentHeight = pageHeight - (margin * 2)
+
+        for (pageIndex, range) in pageRanges.enumerated() {
+            let pageY = CGFloat(pageRanges.count - 1 - pageIndex) * pageHeight
+
+            // Only draw if this page intersects with dirtyRect
+            let pageRect = NSRect(x: 0, y: pageY, width: pageWidth, height: pageHeight)
+            guard pageRect.intersects(dirtyRect) else { continue }
+
+            context.saveGState()
+
+            // Translate to page position with margins
+            context.translateBy(x: margin, y: pageY + margin)
+
+            // Create frame for this page's text
+            let path = CGPath(rect: CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight), transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, range, path, nil)
+
+            // Draw the text frame
+            CTFrameDraw(frame, context)
+
+            context.restoreGState()
+        }
     }
 }
 

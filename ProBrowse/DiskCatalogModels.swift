@@ -34,7 +34,10 @@ struct DiskCatalogEntry: Identifiable, Codable {
     let minVersion: UInt8?
     let headerPointer: Int?  // VDH/SDH pointer for directories
 
-    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, auxType: UInt16 = 0, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?, modificationDate: String? = nil, creationDate: String? = nil, storageType: UInt8? = nil, keyPointer: Int? = nil, accessFlags: UInt8? = nil, version: UInt8? = nil, minVersion: UInt8? = nil, headerPointer: Int? = nil) {
+    // Resource fork data (for extended files, storage type 5)
+    let resourceForkData: Data?
+
+    init(id: UUID = UUID(), name: String, fileType: UInt8, fileTypeString: String, auxType: UInt16 = 0, size: Int, blocks: Int?, loadAddress: Int?, length: Int?, data: Data, isImage: Bool, isDirectory: Bool, children: [DiskCatalogEntry]?, modificationDate: String? = nil, creationDate: String? = nil, storageType: UInt8? = nil, keyPointer: Int? = nil, accessFlags: UInt8? = nil, version: UInt8? = nil, minVersion: UInt8? = nil, headerPointer: Int? = nil, resourceForkData: Data? = nil) {
         self.id = id
         self.name = name
         self.fileType = fileType
@@ -56,6 +59,7 @@ struct DiskCatalogEntry: Identifiable, Codable {
         self.version = version
         self.minVersion = minVersion
         self.headerPointer = headerPointer
+        self.resourceForkData = resourceForkData
     }
 
     // MARK: - Storage Type Descriptions
@@ -67,6 +71,7 @@ struct DiskCatalogEntry: Identifiable, Codable {
         case 0x01: return "Seedling"
         case 0x02: return "Sapling"
         case 0x03: return "Tree"
+        case 0x05: return "Extended"
         case 0x0D: return "Subdirectory"
         case 0x0E: return "Subdirectory Header"
         case 0x0F: return "Volume Directory Header"

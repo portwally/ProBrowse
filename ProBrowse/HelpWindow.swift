@@ -206,6 +206,8 @@ struct FileInspectorHelpView: View {
             HelpSection("Content Tab") {
                 HelpBullet("**BASIC Programs** - Detokenized listing with syntax highlighting")
                 HelpBullet("**Text Files** - Plain text display")
+                HelpBullet("**AppleWorks** - Classic and GS word processor, database, and spreadsheet")
+                HelpBullet("**Teach Documents** - Apple IIgs Teach files with fonts, styles, and colors")
                 HelpBullet("**Graphics** - HGR, DHGR, SHR, and packed formats with 1x/2x/3x scaling")
                 HelpBullet("**Fonts** - Apple IIgs font preview with sample text and character grid")
                 HelpBullet("**Icons** - Apple IIgs icon files with 16-color palette and transparency")

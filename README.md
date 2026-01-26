@@ -13,7 +13,7 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 ### Features
 
 ✅ **Dual-Pane Browser** - Work with two disk images simultaneously
-✅ **File Inspector** - View file contents with Cmd+I (BASIC, graphics, fonts, icons, hex dump)
+✅ **File Inspector** - View file contents with Cmd+I (BASIC, AppleWorks, graphics, fonts, icons, hex dump)
 ✅ **Native ProDOS Support** - Read and write ProDOS disk images natively in Swift
 ✅ **DOS 3.3 Support** - Full read and write support for DOS 3.3 disk images
 ✅ **UCSD Pascal Support** - Read UCSD Pascal volumes (read-only)
@@ -24,6 +24,8 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 ✅ **Font Preview** - Apple IIgs bitmap fonts with sample text and character grid
 ✅ **Icon Preview** - Apple IIgs Finder icons with 16-color palette and transparency
 ✅ **BASIC Viewer** - Syntax-highlighted Applesoft and Integer BASIC listings
+✅ **AppleWorks Viewer** - Classic and GS word processor, database, and spreadsheet
+✅ **Teach Viewer** - Apple IIgs Teach documents with fonts, styles, and colors
 ✅ **Date/Time Support** - Displays creation and modification dates from ProDOS
 ✅ **Modern UI** - Clean SwiftUI interface with resizable columns
 ✅ **Export Capability** - Extract files to your Mac  

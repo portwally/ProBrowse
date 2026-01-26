@@ -33,6 +33,19 @@ All notable changes to ProBrowse will be documented in this file.
   - Transparency mask support with checkerboard background option
   - Shows associated file path patterns
   - Scalable preview (2x-8x)
+- **AppleWorks Document Viewer** - View AppleWorks files natively
+  - Classic Word Processor ($1A/AWP) with bold, underline, and formatting
+  - AppleWorks GS Word Processor ($50/GWP) with WYSIWYG fonts, sizes, and colors
+  - Database ($19/ADB) as searchable table with category headers
+  - Spreadsheet ($1B/ASP) with cell grid and formulas
+  - Full character encoding support including MouseText and Mac OS Roman
+- **Teach Document Viewer** - View Apple IIgs Teach files ($50/$5445)
+  - WYSIWYG display with fonts, styles, and colors
+  - Parses resource fork for style information
+  - Paper-like rendering with white background
+- **Extended File Support** - Read files with resource forks (storage type 5)
+  - Extracts both data fork and resource fork from ProDOS extended files
+  - Required for Teach documents and other IIgs applications
 - **Native Disk Image Verification** - Verify image integrity without external tools
   - Validates file size, format structure, and 2IMG containers
   - Reports volume name, format, and file count

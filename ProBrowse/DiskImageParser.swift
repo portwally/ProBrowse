@@ -498,7 +498,22 @@ class DiskImageParser {
                     ))
                 } else {
                     // File
-                    let fileData = extractProDOSFile(data: data, keyBlock: keyPointer, blocksUsed: blocksUsed, eof: eof, storageType: Int(storageType), isDOSOrder: isDOSOrder) ?? Data()
+                    var fileData: Data
+                    var resourceForkData: Data? = nil
+
+                    if storageType == 0x05 {
+                        // Extended file - extract both data and resource forks
+                        if let forks = extractExtendedFile(data: data, keyBlock: keyPointer, isDOSOrder: isDOSOrder) {
+                            fileData = forks.dataFork
+                            resourceForkData = forks.resourceFork.isEmpty ? nil : forks.resourceFork
+                        } else {
+                            fileData = Data()
+                        }
+                    } else {
+                        // Regular file - data fork only
+                        fileData = extractProDOSFile(data: data, keyBlock: keyPointer, blocksUsed: blocksUsed, eof: eof, storageType: Int(storageType), isDOSOrder: isDOSOrder) ?? Data()
+                    }
+
                     let isGraphicsFile = [0x08, 0xC0, 0xC1].contains(fileType)
 
                     // Get proper file type info from ProDOSFileTypes
@@ -524,7 +539,8 @@ class DiskImageParser {
                         accessFlags: accessFlags,
                         version: version,
                         minVersion: minVersion,
-                        headerPointer: headerPointer
+                        headerPointer: headerPointer,
+                        resourceForkData: resourceForkData
                     ))
                     entriesInThisBlock += 1
                 }
@@ -539,9 +555,42 @@ class DiskImageParser {
         return entries
     }
     
+    /// Extract extended file (storage type 5) with both data and resource forks
+    private static func extractExtendedFile(data: Data, keyBlock: Int, isDOSOrder: Bool) -> (dataFork: Data, resourceFork: Data)? {
+        guard let extendedKeyBlock = getBlockData(from: data, blockIndex: keyBlock, isDOSOrder: isDOSOrder) else {
+            return nil
+        }
+
+        // Data fork info (bytes 0-8)
+        let dataStorageType = Int(extendedKeyBlock[0])
+        let dataKeyBlock = Int(extendedKeyBlock[1]) | (Int(extendedKeyBlock[2]) << 8)
+        let dataBlocksUsed = Int(extendedKeyBlock[3]) | (Int(extendedKeyBlock[4]) << 8)
+        let dataEof = Int(extendedKeyBlock[5]) | (Int(extendedKeyBlock[6]) << 8) | (Int(extendedKeyBlock[7]) << 16)
+
+        // Resource fork info (bytes 256-264)
+        let rsrcStorageType = Int(extendedKeyBlock[256])
+        let rsrcKeyBlock = Int(extendedKeyBlock[257]) | (Int(extendedKeyBlock[258]) << 8)
+        let rsrcBlocksUsed = Int(extendedKeyBlock[259]) | (Int(extendedKeyBlock[260]) << 8)
+        let rsrcEof = Int(extendedKeyBlock[261]) | (Int(extendedKeyBlock[262]) << 8) | (Int(extendedKeyBlock[263]) << 16)
+
+        // Extract data fork
+        var dataFork = Data()
+        if dataStorageType > 0 && dataKeyBlock > 0 {
+            dataFork = extractProDOSFile(data: data, keyBlock: dataKeyBlock, blocksUsed: dataBlocksUsed, eof: dataEof, storageType: dataStorageType, isDOSOrder: isDOSOrder) ?? Data()
+        }
+
+        // Extract resource fork
+        var resourceFork = Data()
+        if rsrcStorageType > 0 && rsrcKeyBlock > 0 {
+            resourceFork = extractProDOSFile(data: data, keyBlock: rsrcKeyBlock, blocksUsed: rsrcBlocksUsed, eof: rsrcEof, storageType: rsrcStorageType, isDOSOrder: isDOSOrder) ?? Data()
+        }
+
+        return (dataFork, resourceFork)
+    }
+
     private static func extractProDOSFile(data: Data, keyBlock: Int, blocksUsed: Int, eof: Int, storageType: Int, isDOSOrder: Bool) -> Data? {
         var fileData = Data()
-        
+
         if storageType == 1 {
             // Seedling file (single block)
             if let blockData = getBlockData(from: data, blockIndex: keyBlock, isDOSOrder: isDOSOrder) {
