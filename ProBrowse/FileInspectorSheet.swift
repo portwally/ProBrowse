@@ -141,10 +141,23 @@ struct FileInspectorSheet: View {
         case .integerBasic:
             let listing = IntegerBasicDetokenizer.detokenize(entry.data)
             return createBasicPrintView(listing, title: "Integer BASIC: \(entry.name)")
+        case .merlin:
+            let listing = MerlinDecoder.toPlainText(entry.data)
+            return createBasicPrintView(listing, title: "Merlin Assembler: \(entry.name)")
+        case .disassembly:
+            let startAddr = entry.auxType != 0 ? entry.auxType : (entry.fileType == 0xFF ? 0x2000 : 0x0800)
+            let listing = Disassembler6502.toPlainText(data: entry.data, startAddress: startAddr)
+            return createBasicPrintView(listing, title: "6502 Disassembly: \(entry.name)")
+        case .disassembly65816:
+            let startAddr: UInt32 = entry.auxType != 0 ? UInt32(entry.auxType) : 0x010000
+            let listing = Disassembler65816.toPlainText(data: entry.data, startAddress: startAddr)
+            return createBasicPrintView(listing, title: "65816 Disassembly: \(entry.name)")
         case .graphics:
             return createGraphicsPrintView()
         case .font:
             return createFontPrintView()
+        case .hiResFont:
+            return createHiResFontPrintView()
         case .icon:
             return createIconPrintView()
         case .appleWorks:
@@ -197,6 +210,18 @@ struct FileInspectorSheet: View {
             text += "Descent: \(fontFile.descent)\n"
         }
         return createTextPrintView(text)
+    }
+
+    private func createHiResFontPrintView() -> NSView {
+        // Render the font grid as an image for printing
+        if let font = HiResFontDecoder.decode(entry.data),
+           let cgImage = HiResFontDecoder.renderFontGrid(font, scale: 3, showGrid: true) {
+            let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: nsImage.size.width, height: nsImage.size.height))
+            imageView.image = nsImage
+            return imageView
+        }
+        return createTextPrintView("Unable to decode Hi-Res font")
     }
 
     private func createIconPrintView() -> NSView {
@@ -325,8 +350,12 @@ struct FileInspectorSheet: View {
         case text
         case applesoftBasic
         case integerBasic
+        case merlin
+        case disassembly
+        case disassembly65816
         case graphics
         case font
+        case hiResFont
         case icon
         case appleWorks
         case teach
@@ -337,6 +366,10 @@ struct FileInspectorSheet: View {
         // Check by ProDOS file type
         switch entry.fileType {
         case 0x04:  // TXT
+            // Check if this is Merlin assembler source
+            if isMerlinSource() {
+                return .merlin
+            }
             return .text
         case 0xFC:  // BAS (Applesoft)
             return .applesoftBasic
@@ -355,26 +388,40 @@ struct FileInspectorSheet: View {
                 return .teach  // Teach document ('TE')
             }
             return .binary
-        case 0x06:  // BIN - check if graphics by size
+        case 0x06:  // BIN - check if graphics by size, otherwise disassemble
             if isLikelyGraphics() {
                 return .graphics
             }
-            return .binary
+            return .disassembly
+        case 0xFF:  // SYS - System file (executable)
+            return .disassembly
+        case 0xFE:  // REL - Relocatable code
+            return .disassembly
         case 0x08:  // FOT (Apple II Graphics)
             return .graphics
         case 0xC0:  // PNT (Packed SHR)
             return .graphics
         case 0xC1:  // PIC (SHR)
             return .graphics
+        case 0x07:  // FNT (Hi-Res Font)
+            // Validate it's a valid hi-res font size
+            if HiResFontDecoder.isHiResFont(entry.data) {
+                return .hiResFont
+            }
+            return .binary
         case 0xC8:  // FNT (Apple IIgs Font)
             return .font
         case 0xCA:  // ICN (Apple IIgs Icons)
             return .icon
-        case 0xB3:  // APP - Some SHR files use this type
+        case 0xB3:  // S16 - GS/OS Application (65816)
             if isLikelyGraphics() {
                 return .graphics
             }
-            return .binary
+            return .disassembly65816
+        case 0xB5:  // EXE - GS/OS Executable (65816)
+            return .disassembly65816
+        case 0xBC:  // OSU - GS/OS Utility (65816)
+            return .disassembly65816
         default:
             // Check if it looks like text
             if isLikelyText() {
@@ -401,6 +448,19 @@ struct FileInspectorSheet: View {
                size == 16384 ||                    // DHGR
                (size >= 32000 && size <= 32768) || // SHR
                (size >= 38400 && size <= 39000)    // 3200-color SHR
+    }
+
+    private func isMerlinSource() -> Bool {
+        // Check filename extension (.S is common for Merlin source)
+        let name = entry.name.uppercased()
+        let hasExtension = name.hasSuffix(".S")
+
+        // Check if content looks like Merlin assembler
+        let looksLikeMerlin = MerlinDecoder.isMerlinSource(entry.data)
+
+        // If has .S extension and content matches, definitely Merlin
+        // Or if content strongly matches Merlin format
+        return (hasExtension && looksLikeMerlin) || looksLikeMerlin
     }
 
     private func isLikelyText() -> Bool {
@@ -437,10 +497,18 @@ struct FileContentView: View {
                 BasicListingView(data: entry.data, isApplesoft: true)
             case .integerBasic:
                 BasicListingView(data: entry.data, isApplesoft: false)
+            case .merlin:
+                MerlinView(entry: entry)
+            case .disassembly:
+                DisassemblyView(entry: entry)
+            case .disassembly65816:
+                Disassembly65816View(entry: entry)
             case .graphics:
                 GraphicsPreviewView(entry: entry)
             case .font:
                 FontPreviewView(entry: entry)
+            case .hiResFont:
+                HiResFontView(entry: entry)
             case .icon:
                 IconPreviewView(entry: entry)
             case .appleWorks:
@@ -457,8 +525,12 @@ struct FileContentView: View {
         case text
         case applesoftBasic
         case integerBasic
+        case merlin
+        case disassembly
+        case disassembly65816
         case graphics
         case font
+        case hiResFont
         case icon
         case appleWorks
         case teach
@@ -469,6 +541,10 @@ struct FileContentView: View {
         // Check by ProDOS file type
         switch entry.fileType {
         case 0x04:  // TXT
+            // Check if this is Merlin assembler source (.S extension or Merlin content)
+            if isMerlinSource() {
+                return .merlin
+            }
             return .text
         case 0xFC:  // BAS (Applesoft)
             return .applesoftBasic
@@ -487,26 +563,40 @@ struct FileContentView: View {
                 return .teach  // Teach document ('TE')
             }
             return .binary
-        case 0x06:  // BIN - check if graphics by size
+        case 0x06:  // BIN - check if graphics by size, otherwise disassemble
             if isLikelyGraphics() {
                 return .graphics
             }
-            return .binary
+            return .disassembly
+        case 0xFF:  // SYS - System file (executable)
+            return .disassembly
+        case 0xFE:  // REL - Relocatable code
+            return .disassembly
         case 0x08:  // FOT (Apple II Graphics)
             return .graphics
         case 0xC0:  // PNT (Packed SHR)
             return .graphics
         case 0xC1:  // PIC (SHR)
             return .graphics
+        case 0x07:  // FNT (Hi-Res Font)
+            // Validate it's a valid hi-res font size
+            if HiResFontDecoder.isHiResFont(entry.data) {
+                return .hiResFont
+            }
+            return .binary
         case 0xC8:  // FNT (Apple IIgs Font)
             return .font
         case 0xCA:  // ICN (Apple IIgs Icons)
             return .icon
-        case 0xB3:  // APP - Some SHR files use this type
+        case 0xB3:  // S16 - GS/OS Application (65816)
             if isLikelyGraphics() {
                 return .graphics
             }
-            return .binary
+            return .disassembly65816
+        case 0xB5:  // EXE - GS/OS Executable (65816)
+            return .disassembly65816
+        case 0xBC:  // OSU - GS/OS Utility (65816)
+            return .disassembly65816
         default:
             // Check if it looks like text
             if isLikelyText() {
@@ -533,6 +623,27 @@ struct FileContentView: View {
                size == 16384 ||                    // DHGR
                (size >= 32000 && size <= 32768) || // SHR
                (size >= 38400 && size <= 39000)    // 3200-color SHR
+    }
+
+    private func isMerlinSource() -> Bool {
+        // Check filename extension (.S is common for Merlin source)
+        let name = entry.name.uppercased()
+        let hasExtension = name.hasSuffix(".S")
+
+        // Check if content looks like Merlin assembler
+        let looksLikeMerlin = MerlinDecoder.isMerlinSource(entry.data)
+
+        // If has .S extension and content matches, definitely Merlin
+        if hasExtension && looksLikeMerlin {
+            return true
+        }
+
+        // If content strongly matches Merlin format, use it even without extension
+        if looksLikeMerlin {
+            return true
+        }
+
+        return false
     }
 
     private func isLikelyText() -> Bool {
@@ -599,13 +710,14 @@ struct BasicListingView: View {
     let isApplesoft: Bool
 
     var body: some View {
-        ScrollView([.horizontal, .vertical], showsIndicators: true) {
+        ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(getLines().enumerated()), id: \.offset) { index, line in
                     BasicLineView(line: line, isApplesoft: isApplesoft, isEvenRow: index % 2 == 0)
                 }
             }
             .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .textSelection(.enabled)
     }
@@ -623,45 +735,67 @@ struct BasicLineView: View {
     let isApplesoft: Bool
     let isEvenRow: Bool
 
+    // Constants for layout - line number column width
+    private let lineNumWidth: CGFloat = 55  // Width for line number + padding
+
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            // Line number (first part before space)
-            if let spaceIndex = line.firstIndex(of: " ") {
-                let lineNum = String(line[..<spaceIndex])
-                let code = String(line[line.index(after: spaceIndex)...])
-
-                // Line number column - compact, fixed width
-                Text(lineNum)
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.yellow)
-                    .frame(width: 45, alignment: .trailing)
-
-                // Code - single line, no wrap
-                Text(attributedCode(code))
-                    .font(.system(size: 13, design: .monospaced))
-                    .padding(.leading, 8)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            } else {
-                Text(line)
-                    .font(.system(size: 13, design: .monospaced))
-                    .padding(.leading, 53)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-        }
-        .padding(.vertical, 3)
-        .padding(.horizontal, 8)
-    }
-
-    @ViewBuilder
-    private func highlightedCode(_ code: String) -> some View {
-        Text(attributedCode(code))
+        Text(buildAttributedLine())
             .font(.system(size: 13, design: .monospaced))
+            .padding(.vertical, 3)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func attributedCode(_ code: String) -> AttributedString {
+    /// Build a single AttributedString with line number and code,
+    /// using paragraph style for proper hanging indent on wrapped lines
+    private func buildAttributedLine() -> AttributedString {
+        // Parse line number and code using regex to handle right-aligned line numbers
+        // Format from detokenizer is "%5d " e.g. "   10 PRINT" or "  100 DATA..."
+        let pattern = #"^(\s*\d+)\s+(.*)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let lineNumRange = Range(match.range(at: 1), in: line),
+              let codeRange = Range(match.range(at: 2), in: line) else {
+            // No match - just return the line as-is
+            var result = AttributedString(line)
+            result.foregroundColor = .primary
+            return result
+        }
+
+        let lineNum = String(line[lineNumRange]).trimmingCharacters(in: .whitespaces)
+        let code = String(line[codeRange])
+
+        // Create paragraph style with hanging indent
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.headIndent = lineNumWidth  // Continuation lines start here
+        paragraphStyle.firstLineHeadIndent = 0     // First line starts at left
+        paragraphStyle.lineBreakMode = .byWordWrapping
+
+        // Build attributed string: line number (padded) + code
+        var result = AttributedString()
+
+        // Line number - right-aligned within fixed width by padding
+        let paddedLineNum = lineNum.padding(toLength: 5, withPad: " ", startingAt: 0)
+        var lineNumAttr = AttributedString(paddedLineNum + " ")
+        lineNumAttr.foregroundColor = .yellow
+        lineNumAttr.font = .system(size: 13, weight: .semibold, design: .monospaced)
+        result.append(lineNumAttr)
+
+        // Code with syntax highlighting
+        var codeAttr = highlightCode(code)
+        codeAttr.font = .system(size: 13, design: .monospaced)
+        result.append(codeAttr)
+
+        // Apply paragraph style to entire string
+        result.paragraphStyle = paragraphStyle
+
+        return result
+    }
+
+    /// Apply syntax highlighting to code portion
+    private func highlightCode(_ code: String) -> AttributedString {
         var result = AttributedString(code)
+        result.foregroundColor = .primary
 
         // Highlight strings (text between quotes)
         let stringPattern = "\"[^\"]*\""

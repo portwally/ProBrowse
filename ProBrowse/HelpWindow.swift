@@ -135,19 +135,23 @@ struct FormatsHelpView: View {
             }
 
             HelpSection("Archive Formats") {
-                FormatRow(ext: ".shk", name: "ShrinkIt Archive", read: true, write: false)
-                FormatRow(ext: ".sdk", name: "ShrinkIt Disk", read: true, write: false)
-                FormatRow(ext: ".bxy", name: "Binary II + ShrinkIt", read: true, write: false)
-                FormatRow(ext: ".bny", name: "Binary II", read: true, write: false)
+                FormatRow(ext: ".shk", name: "ShrinkIt Archive", read: true, write: true)
+                FormatRow(ext: ".sdk", name: "ShrinkIt Disk", read: true, write: true)
+                FormatRow(ext: ".bxy", name: "Binary II + ShrinkIt", read: true, write: true)
+                FormatRow(ext: ".bny", name: "Binary II", read: true, write: true)
+                FormatRow(ext: ".gz", name: "Gzip", read: true, write: false)
+                FormatRow(ext: ".zip", name: "ZIP Archive", read: true, write: false)
             }
 
             HelpSection("File Systems") {
                 HelpBullet("**ProDOS** - Full read/write with subdirectories")
                 HelpBullet("**DOS 3.3** - Full read/write support")
+                HelpBullet("**ShrinkIt/Binary II** - Full read/write with native LZW compression")
                 HelpBullet("**UCSD Pascal** - Read-only")
+                HelpBullet("**Gzip/ZIP** - Read-only")
             }
 
-            HelpNote("ShrinkIt LZW decompression requires nulib2. Install via: brew install nulib2")
+            HelpNote("All archive formats are handled natively - no external tools required.")
         }
     }
 }
@@ -161,6 +165,7 @@ struct FileOperationsHelpView: View {
 
             HelpSection("Copying Files") {
                 HelpBullet("**Drag & Drop** - Drag files from one pane to another")
+                HelpBullet("**Import from Finder** - Drag files from Finder into a pane")
                 HelpBullet("**Copy/Paste** - Use Cmd+C and Cmd+V")
                 HelpBullet("**Cut/Paste** - Use Cmd+X and Cmd+V (moves files)")
             }
@@ -205,10 +210,13 @@ struct FileInspectorHelpView: View {
 
             HelpSection("Content Tab") {
                 HelpBullet("**BASIC Programs** - Detokenized listing with syntax highlighting")
+                HelpBullet("**Merlin Assembler** - 6502 source code with column formatting")
+                HelpBullet("**6502 Disassembly** - Machine code with mnemonics for BIN/SYS files")
                 HelpBullet("**Text Files** - Plain text display")
                 HelpBullet("**AppleWorks** - Classic and GS word processor, database, and spreadsheet")
                 HelpBullet("**Teach Documents** - Apple IIgs Teach files with fonts, styles, and colors")
                 HelpBullet("**Graphics** - HGR, DHGR, SHR, and packed formats with 1x/2x/3x scaling")
+                HelpBullet("**Hi-Res Fonts** - Apple II screen fonts ($07/FNT) with character grid")
                 HelpBullet("**Fonts** - Apple IIgs font preview with sample text and character grid")
                 HelpBullet("**Icons** - Apple IIgs icon files with 16-color palette and transparency")
                 HelpBullet("**Other Files** - Hex dump with ASCII sidebar")
@@ -219,6 +227,23 @@ struct FileInspectorHelpView: View {
                 HelpBullet("String literals in green")
                 HelpBullet("REM comments in gray italic")
                 HelpBullet("Line numbers in yellow")
+                HelpBullet("Long lines wrap with proper indentation")
+            }
+
+            HelpSection("Merlin Assembler Features") {
+                HelpBullet("Auto-detects TXT files with .S extension")
+                HelpBullet("Supports both high-ASCII (Apple II) and low-ASCII (modern) text")
+                HelpBullet("Labels in purple, opcodes in blue, comments in green")
+                HelpBullet("Proper column alignment (label/opcode/operand/comment)")
+                HelpBullet("Long lines wrap with proper indentation")
+            }
+
+            HelpSection("Disassembly Features") {
+                HelpBullet("**6502** - Automatic for BIN, SYS, REL files")
+                HelpBullet("**65816** - For S16, EXE, and other IIgs executables")
+                HelpBullet("Uses aux type as load address")
+                HelpBullet("Mnemonics in blue, addresses in default color")
+                HelpBullet("Comments for known Apple II ROM and I/O addresses")
             }
 
             HelpSection("Hex Tab") {
@@ -346,14 +371,8 @@ struct TroubleshootingHelpView: View {
 
             HelpSection("Can't Write to Disk") {
                 HelpBullet("UCSD Pascal volumes are read-only")
-                HelpBullet("ShrinkIt archives are read-only")
+                HelpBullet("Gzip and ZIP archives are read-only")
                 HelpBullet("Check if disk image file is locked")
-            }
-
-            HelpSection("ShrinkIt Not Working") {
-                HelpBullet("Install nulib2: brew install nulib2")
-                HelpBullet("Restart ProBrowse after installing")
-                HelpBullet("Check console for error messages")
             }
 
             HelpSection("File Type Not Recognized") {

@@ -2,7 +2,25 @@
 
 All notable changes to ProBrowse will be documented in this file.
 
+## [2.5] - 2026-01-26
 
+### Improved
+- **BASIC Listing Text Wrapping** - Long lines now wrap properly with hanging indent
+  - DATA statements and other long lines stay readable within the window
+  - Wrapped text aligns with code column (after line number)
+  - Works for both Applesoft and Integer BASIC
+- **Merlin Assembler Text Wrapping** - Same hanging indent for wrapped lines
+  - Long operands and comments stay properly aligned when wrapped
+- **Merlin Source Detection** - Now recognizes both high-ASCII and low-ASCII text
+  - High-ASCII: Authentic Apple II format with $8D line endings and $A0 column separators
+  - Low-ASCII: Modern text files with LF/CR line endings and standard spaces
+  - .S extension files automatically detected as Merlin source
+- **File Import from Finder** - Drag & drop now preserves original filename
+  - Files dropped from Finder keep their name (e.g., HELLO.S instead of DROPPED.TXT)
+  - Proper handling of content types (public.assembly-source, public.source-code)
+  - Automatic file type detection based on extension (.s, .asm, .txt)
+
+## [2.0] - 2026-01-26
 
 ### Added
 - **File Inspector** - Comprehensive file viewer with tabbed interface (Content, Hex, Info)
@@ -13,6 +31,16 @@ All notable changes to ProBrowse will be documented in this file.
   - String literals in green
   - REM comments in gray italic
   - Line numbers in yellow
+- **Merlin Assembler Viewer** - View 6502 assembly source files (TXT with .S extension)
+  - Automatic detection of Merlin source format
+  - Syntax highlighting: labels (purple), opcodes (blue), comments (green)
+  - Proper column alignment matching original Merlin editor
+  - Supports high-ASCII encoding with $A0 column separators
+- **6502 Disassembler** - View machine code with mnemonics for BIN/SYS/REL files
+  - Complete 6502 instruction set (56 instructions, all addressing modes)
+  - Uses aux type as starting address (or type-specific defaults)
+  - Syntax highlighting: addresses, bytes, mnemonics, operands
+  - Comments for known Apple II ROM routines and I/O addresses
 - **Graphics Preview** - Native Apple II graphics decoding
   - Hi-Res (HGR) - 280x192, 6 colors
   - Double Hi-Res (DHGR) - 560x192, 16 colors
@@ -23,10 +51,16 @@ All notable changes to ProBrowse will be documented in this file.
 - **Hex Dump Viewer** - Professional hex viewer with ASCII sidebar
   - 16 bytes per line with offset column
   - Supports files up to 64KB display
-- **Apple IIgs Font Preview** - View bitmap fonts ($C8/FNT files)
+- **Apple IIgs Font Preview** - View IIgs bitmap fonts ($C8/FNT files)
   - Sample text rendering with the font
   - Character grid showing all glyphs
   - Font metrics display (height, ascent, descent, etc.)
+  - Scalable preview (1x-4x)
+- **Hi-Res Font Preview** - View Apple II screen fonts ($07/FNT files)
+  - Standard fonts: 768 bytes (96 chars) or 1024 bytes (128 chars)
+  - Double-size fonts: 3072 bytes (96 chars at 14x16 pixels)
+  - Character grid with 16 columns
+  - Interactive sample text rendering
   - Scalable preview (1x-4x)
 - **Apple IIgs Icon Preview** - View icon files ($CA/ICN files)
   - Displays large and small icons with 16-color Apple IIgs palette
@@ -122,6 +156,7 @@ All notable changes to ProBrowse will be documented in this file.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.5 | 2026-01-26 | Text wrapping with hanging indent, Merlin low-ASCII support, Finder import fix |
 | 2.0 | 2026-01-26 | File Inspector, BASIC viewer, graphics preview, hex dump |
 | 1.0 | 2026-01-25 | Change file type, NuFX/ShrinkIt, UCSD Pascal, DOS 3.3 write |
 | 0.7.0 | 2024-12 | Initial dual-pane browser release |

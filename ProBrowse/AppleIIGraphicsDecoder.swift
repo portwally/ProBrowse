@@ -16,6 +16,7 @@ enum AppleIIImageType: Equatable {
     case DHGR
     case SHR(is3200Color: Bool)
     case PackedSHR(mode: String)
+    case MacPaint
     case Unknown
 
     var displayName: String {
@@ -24,6 +25,7 @@ enum AppleIIImageType: Equatable {
         case .DHGR: return "Double Hi-Res (DHGR)"
         case .SHR(let is3200): return is3200 ? "Super Hi-Res (3200 color)" : "Super Hi-Res (SHR)"
         case .PackedSHR(let mode): return "Super Hi-Res (\(mode))"
+        case .MacPaint: return "MacPaint"
         case .Unknown: return "Unknown"
         }
     }
@@ -33,6 +35,7 @@ enum AppleIIImageType: Equatable {
         case .HGR: return (280, 192)
         case .DHGR: return (560, 192)
         case .SHR, .PackedSHR: return (320, 200)
+        case .MacPaint: return (576, 720)
         case .Unknown: return (0, 0)
         }
     }
@@ -213,6 +216,13 @@ class AppleIIDecoder {
 
         default:
             break
+        }
+
+        // Check for MacPaint format (has 512-byte header + PackBits compressed data)
+        if MacPaintDecoder.isMacPaint(data) {
+            if let image = MacPaintDecoder.decode(data) {
+                return (image, .MacPaint)
+            }
         }
 
         // Fallback: detect by file size

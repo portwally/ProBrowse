@@ -317,160 +317,234 @@ class ApplesoftDetokenizer {
 }
 
 /// Integer BASIC detokenizer (for type $FA files)
+/// Based on CiderPress2 implementation by faddenSoft
 class IntegerBasicDetokenizer {
 
-    // Integer BASIC token table
-    static let tokens: [UInt8: String] = [
-        0x00: "HIMEM:",
-        0x01: "_",  // Placeholder
-        0x02: "_",
-        0x03: ":",
-        0x04: "LOAD",
-        0x05: "SAVE",
-        0x06: "CON",
-        0x07: "RUN",
-        0x08: "RUN",
-        0x09: "DEL",
-        0x0A: ",",
-        0x0B: "NEW",
-        0x0C: "CLR",
-        0x0D: "AUTO",
-        0x0E: ",",
-        0x0F: "MAN",
-        0x10: "HIMEM:",
-        0x11: "LOMEM:",
-        0x12: "+",
-        0x13: "-",
-        0x14: "*",
-        0x15: "/",
-        0x16: "=",
-        0x17: "#",
-        0x18: ">=",
-        0x19: ">",
-        0x1A: "<=",
-        0x1B: "<>",
-        0x1C: "<",
-        0x1D: "AND",
-        0x1E: "OR",
-        0x1F: "MOD",
-        0x20: "^",
-        0x21: "+",  // Unary plus
-        0x22: "(",
-        0x23: ",",
-        0x24: "THEN",
-        0x25: "THEN",
-        0x26: ",",
-        0x27: ",",
-        0x28: "\"",
-        0x29: "\"",
-        0x2A: "(",
-        0x2B: "!",  // Exclamation (comment)
-        0x2C: "!",
-        0x2D: "(",
-        0x2E: "PEEK",
-        0x2F: "RND",
-        0x30: "SGN",
-        0x31: "ABS",
-        0x32: "PDL",
-        0x33: "RNDX",
-        0x34: "(",
-        0x35: "+",
-        0x36: "-",
-        0x37: "NOT",
-        0x38: "(",
-        0x39: "=",
-        0x3A: "#",
-        0x3B: "LEN(",
-        0x3C: "ASC(",
-        0x3D: "SCRN(",
-        0x3E: ",",
-        0x3F: "(",
-        0x40: "$",
-        0x41: "$",
-        0x42: "(",
-        0x43: ",",
-        0x44: ",",
-        0x45: ";",
-        0x46: ";",
-        0x47: ";",
-        0x48: ",",
-        0x49: ",",
-        0x4A: ",",
-        0x4B: "TEXT",
-        0x4C: "GR",
-        0x4D: "CALL",
-        0x4E: "DIM",
-        0x4F: "DIM",
-        0x50: "TAB",
-        0x51: "END",
-        0x52: "INPUT",
-        0x53: "INPUT",
-        0x54: "INPUT",
-        0x55: "FOR",
-        0x56: "=",
-        0x57: "TO",
-        0x58: "STEP",
-        0x59: "NEXT",
-        0x5A: ",",
-        0x5B: "RETURN",
-        0x5C: "GOSUB",
-        0x5D: "REM",
-        0x5E: "LET",
-        0x5F: "GOTO",
-        0x60: "IF",
-        0x61: "PRINT",
-        0x62: "PRINT",
-        0x63: "PRINT",
-        0x64: "POKE",
-        0x65: ",",
-        0x66: "COLOR=",
-        0x67: "PLOT",
-        0x68: ",",
-        0x69: "HLIN",
-        0x6A: ",",
-        0x6B: "AT",
-        0x6C: "VLIN",
-        0x6D: ",",
-        0x6E: "AT",
-        0x6F: "VTAB",
-        0x70: "=",
-        0x71: "=",
-        0x72: ")",
-        0x73: ")",
-        0x74: "LIST",
-        0x75: ",",
-        0x76: "LIST",
-        0x77: "POP",
-        0x78: "NODSP",
-        0x79: "NODSP",
-        0x7A: "NOTRACE",
-        0x7B: "DSP",
-        0x7C: "DSP",
-        0x7D: "TRACE",
-        0x7E: "PR#",
-        0x7F: "IN#"
+    // Integer BASIC token table ($00-$7F)
+    // Some tokens are invalid in programs but included for completeness
+    static let tokens: [String] = [
+        /*$00*/ "HIMEM:",   "",         "_ ",       ":",
+                "LOAD ",    "SAVE ",    "CON ",     "RUN ",
+        /*$08*/ "RUN ",     "DEL ",     ",",        "NEW ",
+                "CLR ",     "AUTO ",    ",",        "MAN ",
+        /*$10*/ "HIMEM:",   "LOMEM:",   "+",        "-",
+                "*",        "/",        "=",        "#",
+        /*$18*/ ">=",       ">",        "<=",       "<>",
+                "<",        "AND ",     "OR ",      "MOD ",
+        /*$20*/ "^ ",       "+",        "(",        ",",
+                "THEN ",    "THEN ",    ",",        ",",
+        /*$28*/ "\"",       "\"",       "(",        "!",
+                "!",        "(",        "PEEK ",    "RND ",
+        /*$30*/ "SGN ",     "ABS ",     "PDL ",     "RNDX ",
+                "(",        "+",        "-",        "NOT ",
+        /*$38*/ "(",        "=",        "#",        "LEN(",
+                "ASC(",     "SCRN(",    ",",        "(",
+        /*$40*/ "$",        "$",        "(",        ",",
+                ",",        ";",        ";",        ";",
+        /*$48*/ ",",        ",",        ",",        "TEXT ",
+                "GR ",      "CALL ",    "DIM ",     "DIM ",
+        /*$50*/ "TAB ",     "END ",     "INPUT ",   "INPUT ",
+                "INPUT ",   "FOR ",     "=",        "TO ",
+        /*$58*/ "STEP ",    "NEXT ",    ",",        "RETURN ",
+                "GOSUB ",   "REM ",     "LET ",     "GOTO ",
+        /*$60*/ "IF ",      "PRINT ",   "PRINT ",   "PRINT ",
+                "POKE ",    ",",        "COLOR=",   "PLOT ",
+        /*$68*/ ",",        "HLIN ",    ",",        "AT ",
+                "VLIN ",    ",",        "AT ",      "VTAB ",
+        /*$70*/ "=",        "=",        ")",        ")",
+                "LIST ",    ",",        "LIST ",    "POP ",
+        /*$78*/ "NODSP ",   "NODSP ",   "NOTRACE ", "DSP ",
+                "DSP ",     "TRACE ",   "PR#",      "IN#"
     ]
 
+    // Special token values
+    private static let TOK_EOL: UInt8 = 0x01
+    private static let TOK_COLON: UInt8 = 0x03
+    private static let TOK_OPEN_QUOTE: UInt8 = 0x28
+    private static let TOK_CLOSE_QUOTE: UInt8 = 0x29
+    private static let TOK_REM: UInt8 = 0x5D
+
     /// Detokenize an Integer BASIC program
+    /// - Parameter data: Raw tokenized Integer BASIC data
+    /// - Returns: Human-readable BASIC listing
     static func detokenize(_ data: Data) -> String {
-        // Integer BASIC format is different from Applesoft
-        // This is a simplified implementation
-        guard data.count >= 2 else {
-            return "// Invalid Integer BASIC program"
+        // Minimum: length byte + line number (2) + EOL = 4 bytes
+        guard data.count >= 4 else {
+            return "// Invalid Integer BASIC program (too short)"
         }
 
-        var result = "// Integer BASIC program\n"
-        result += "// (Full detokenization not yet implemented)\n\n"
+        var result = ""
+        var offset = 0
+        let length = data.count
 
-        // For now, show a hex dump preview
-        let previewBytes = min(data.count, 64)
-        for i in 0..<previewBytes {
-            result += String(format: "%02X ", data[i])
-            if (i + 1) % 16 == 0 {
-                result += "\n"
+        while offset < length {
+            // Check if we have enough for line header
+            guard length - offset >= 3 else {
+                break
+            }
+
+            let startOffset = offset
+
+            // Get line length byte (includes itself)
+            let lineLen = Int(data[offset])
+            offset += 1
+
+            // Zero length marks end of program
+            if lineLen == 0 {
+                break
+            }
+
+            // Check for truncation
+            if startOffset + lineLen > length {
+                result += "// Warning: File may be truncated\n"
+                break
+            }
+
+            // Read 16-bit line number (little-endian)
+            let lineNumLow = Int(data[offset])
+            let lineNumHigh = Int(data[offset + 1])
+            let lineNum = lineNumLow | (lineNumHigh << 8)
+            offset += 2
+
+            // Format line number with padding (like LIST command)
+            result += String(format: "%5d ", lineNum)
+
+            // Process line tokens
+            var trailingSpace = true  // Line number ends with space
+            var newTrailingSpace = false
+
+            while offset < length && data[offset] != TOK_EOL {
+                let curByte = data[offset]
+                offset += 1
+
+                if curByte == TOK_OPEN_QUOTE {
+                    // Start of quoted text
+                    result += "\""
+                    while offset < length && data[offset] != TOK_CLOSE_QUOTE {
+                        let charByte = data[offset] & 0x7F
+                        if charByte >= 0x20 && charByte < 0x7F {
+                            result += String(UnicodeScalar(charByte))
+                        } else {
+                            result += "."
+                        }
+                        offset += 1
+                    }
+                    if offset < length {
+                        offset += 1  // Skip close quote token
+                    }
+                    result += "\""
+                } else if curByte == TOK_REM {
+                    // REM statement - consume to end of line
+                    if !trailingSpace {
+                        result += " "
+                    }
+                    result += tokens[Int(curByte)]
+                    while offset < length && data[offset] != TOK_EOL {
+                        let charByte = data[offset] & 0x7F
+                        if charByte >= 0x20 && charByte < 0x7F {
+                            result += String(UnicodeScalar(charByte))
+                        } else {
+                            result += "."
+                        }
+                        offset += 1
+                    }
+                } else if curByte >= 0xB0 && curByte <= 0xB9 {
+                    // Integer constant ('0'-'9' with high bit set)
+                    // Followed by 16-bit value
+                    guard length - offset >= 2 else {
+                        result += "??"
+                        break
+                    }
+                    let valLow = Int(data[offset])
+                    let valHigh = Int(data[offset + 1])
+                    let value = valLow | (valHigh << 8)
+                    offset += 2
+                    result += String(value)
+                } else if curByte >= 0xC1 && curByte <= 0xDA {
+                    // Variable name ('A'-'Z' with high bit set)
+                    result += String(UnicodeScalar(curByte & 0x7F))
+                    // Continue with more variable name characters
+                    while offset < length {
+                        let nextByte = data[offset]
+                        if (nextByte >= 0xC1 && nextByte <= 0xDA) ||
+                           (nextByte >= 0xB0 && nextByte <= 0xB9) {
+                            result += String(UnicodeScalar(nextByte & 0x7F))
+                            offset += 1
+                        } else {
+                            break  // End of variable name (hit a token)
+                        }
+                    }
+                } else if curByte < 0x80 {
+                    // Language token
+                    let tokStr = tokens[Int(curByte)]
+
+                    // Check if we need a leading space
+                    if !tokStr.isEmpty {
+                        let firstChar = tokStr.first!
+                        // Punctuation and special chars don't need leading space
+                        if firstChar >= "!" && firstChar <= "?" || curByte < 0x12 {
+                            // No leading space needed
+                        } else if !trailingSpace {
+                            result += " "
+                        }
+
+                        result += tokStr
+
+                        // Track trailing space
+                        if tokStr.last == " " {
+                            newTrailingSpace = true
+                        }
+                    }
+                }
+                // Bytes >= $80 that aren't handled above are invalid
+
+                trailingSpace = newTrailingSpace
+                newTrailingSpace = false
+            }
+
+            // Skip the EOL token
+            if offset < length && data[offset] == TOK_EOL {
+                offset += 1
+            }
+
+            result += "\n"
+
+            // Verify line length matches
+            if offset - startOffset != lineLen {
+                // Length mismatch - file may be corrupt, but continue
             }
         }
 
+        if result.isEmpty {
+            return "// Unable to detokenize Integer BASIC program"
+        }
+
         return result
+    }
+
+    /// Check if data appears to be a valid Integer BASIC program
+    /// - Parameter data: Data to check
+    /// - Returns: true if it looks like Integer BASIC
+    static func isValidBasicProgram(_ data: Data) -> Bool {
+        guard data.count >= 4 else { return false }
+
+        // First byte is line length
+        let lineLen = Int(data[0])
+        if lineLen < 4 || lineLen > data.count {
+            return false
+        }
+
+        // Check that last byte of first line is EOL token ($01)
+        if data[lineLen - 1] != TOK_EOL {
+            return false
+        }
+
+        // Line number should be reasonable (0-32767)
+        let lineNumber = Int(data[1]) | (Int(data[2]) << 8)
+        if lineNumber > 32767 {
+            return false
+        }
+
+        return true
     }
 }

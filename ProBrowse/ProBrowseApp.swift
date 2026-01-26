@@ -37,6 +37,14 @@ struct ProBrowseApp: App {
                     )
                 }
                 .keyboardShortcut("?", modifiers: .command)
+
+                Divider()
+
+                Button("Visit ProBrowse on GitHub") {
+                    if let url = URL(string: "https://github.com/portwally/ProBrowse") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
             }
         }
 

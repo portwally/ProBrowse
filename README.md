@@ -13,17 +13,21 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 ### Features
 
 ✅ **Dual-Pane Browser** - Work with two disk images simultaneously
-✅ **File Inspector** - View file contents with Cmd+I (BASIC, AppleWorks, graphics, fonts, icons, hex dump)
+✅ **File Inspector** - View file contents with Cmd+I or context menu
 ✅ **Native ProDOS Support** - Read and write ProDOS disk images natively in Swift
 ✅ **DOS 3.3 Support** - Full read and write support for DOS 3.3 disk images
 ✅ **UCSD Pascal Support** - Read UCSD Pascal volumes (read-only)
-✅ **ShrinkIt Archives** - Browse and extract NuFX archives (.shk, .sdk, .bxy)
-✅ **Drag & Drop** - Copy files between disk images with ease
+✅ **ShrinkIt Archives** - Browse, extract, and create NuFX archives (.shk, .sdk, .bxy)
+✅ **Binary II Archives** - Read and write Binary II archives (.bny, .bqy)
+✅ **Drag & Drop** - Copy files between disk images or import from Finder
+✅ **Change File Type** - Right-click to modify file type and aux type
 ✅ **Complete File Type Database** - Recognizes 200+ ProDOS file types with proper names
 ✅ **Graphics Preview** - View Apple II graphics (HGR, DHGR, SHR, APF) directly
-✅ **Font Preview** - Apple IIgs bitmap fonts with sample text and character grid
+✅ **Font Preview** - Apple IIgs fonts and Apple II hi-res screen fonts
 ✅ **Icon Preview** - Apple IIgs Finder icons with 16-color palette and transparency
 ✅ **BASIC Viewer** - Syntax-highlighted Applesoft and Integer BASIC listings
+✅ **Merlin Viewer** - 6502 assembler source with syntax highlighting
+✅ **Disassembler** - 6502 and 65816 machine code disassembly
 ✅ **AppleWorks Viewer** - Classic and GS word processor, database, and spreadsheet
 ✅ **Teach Viewer** - Apple IIgs Teach documents with fonts, styles, and colors
 ✅ **Date/Time Support** - Displays creation and modification dates from ProDOS
@@ -43,14 +47,16 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 
 ### Supported Archive Formats
 
-| Format | Extension | Description |
-|--------|-----------|-------------|
-| ShrinkIt Disk | `.sdk` | Compressed disk images |
-| ShrinkIt Archive | `.shk` | Compressed file archives |
-| Binary II + ShrinkIt | `.bxy` | Binary II wrapped ShrinkIt |
-| Binary II | `.bny` | Binary II archives |
+| Format | Extension | Read | Write | Description |
+|--------|-----------|------|-------|-------------|
+| ShrinkIt Disk | `.sdk` | ✅ | ✅ | Compressed disk images |
+| ShrinkIt Archive | `.shk` | ✅ | ✅ | Compressed file archives |
+| Binary II + ShrinkIt | `.bxy` | ✅ | ✅ | Binary II wrapped ShrinkIt |
+| Binary II | `.bny`, `.bqy` | ✅ | ✅ | Binary II archives |
+| Gzip | `.gz` | ✅ | ❌ | Gzip compressed files |
+| ZIP | `.zip` | ✅ | ❌ | ZIP archives |
 
-*Note: ShrinkIt support requires [nulib2](https://github.com/fadden/nulib2) for LZW-compressed archives. Install via `brew install nulib2`.*
+*All archive formats are handled natively - no external tools required.*
 
 ### Supported File Systems
 
@@ -59,18 +65,19 @@ ProBrowse is a modern macOS dual-pane file manager for Apple II disk images, bri
 | ProDOS | ✅ | ✅ | Full support including subdirectories |
 | DOS 3.3 | ✅ | ✅ | Full support |
 | UCSD Pascal | ✅ | ❌ | Read-only |
-| ShrinkIt Archives | ✅ | ❌ | Read-only, extraction supported |
+| ShrinkIt Archives | ✅ | ✅ | Native LZW compression |
+| Binary II Archives | ✅ | ✅ | Full support |
 
 
 ### Requirements
 
 - macOS 14.0 (Sonoma) or later
 - Apple Silicon or Intel Mac
-- Optional: [nulib2](https://github.com/fadden/nulib2) for ShrinkIt LZW decompression
 
 ### Current Limitations
 
-- UCSD Pascal and ShrinkIt archives are read-only
+- UCSD Pascal volumes are read-only
+- Gzip and ZIP archives are read-only
 - Beta quality - expect bugs!
 
 ---

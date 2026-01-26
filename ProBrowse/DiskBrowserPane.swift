@@ -391,36 +391,37 @@ struct DiskBrowserPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             Color.clear
-                .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+                .onDrop(of: [.fileURL, .item, .data], isTargeted: $isTargeted) { providers in
                     handleDrop(providers: providers)
                 }
         )
     }
     
     // MARK: - Drop Handler
-    
+
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         print("📥 Drop received with \(providers.count) providers")
-        
+
         // Handle drop from Finder (file URLs)
         for provider in providers {
             print("   Provider has file URL: \(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))")
             print("   Provider has data: \(provider.hasItemConformingToTypeIdentifier("com.probrowse.entries"))")
-            
+            print("   Registered types: \(provider.registeredTypeIdentifiers)")
+
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                print("🗂️ Handling Finder drop")
+                print("🗂️ Handling Finder drop (fileURL type)")
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { (urlData, error) in
                     DispatchQueue.main.async {
                         if let error = error {
                             print("❌ Error loading URL: \(error)")
                             return
                         }
-                        
+
                         if let data = urlData as? Data,
                            let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            
+
                             print("📂 File URL: \(url.path)")
-                            
+
                             // Check if it's a disk image to open
                             if ["po", "2mg", "hdv", "dsk", "do"].contains(url.pathExtension.lowercased()) {
                                 print("💿 Opening disk image")
@@ -435,39 +436,129 @@ struct DiskBrowserPane: View {
                 }
                 return true
             }
+
+            // Handle files dropped by content type (e.g., public.assembly-source, public.source-code)
+            // These don't have fileURL type but can be loaded via loadFileRepresentation
+            let contentTypes = provider.registeredTypeIdentifiers
+            let isSourceFile = contentTypes.contains { typeId in
+                typeId.contains("source") || typeId.contains("text") || typeId.contains("plain")
+            }
+
+            if isSourceFile, let firstType = contentTypes.first {
+                print("🗂️ Handling Finder drop via content type: \(firstType)")
+
+                // Use loadFileRepresentation to get the actual file URL
+                // IMPORTANT: The temporary file is deleted when callback returns, so read data BEFORE dispatching
+                provider.loadFileRepresentation(forTypeIdentifier: firstType) { url, error in
+                    if let error = error {
+                        print("❌ Error loading file representation: \(error)")
+                        return
+                    }
+
+                    guard let url = url else {
+                        print("❌ No URL from file representation")
+                        return
+                    }
+
+                    print("📂 File URL from representation: \(url.path)")
+                    let filename = url.lastPathComponent
+                    let ext = url.pathExtension.lowercased()
+                    print("📄 Original filename: \(filename)")
+
+                    // Read the file data IMMEDIATELY (before temp file is deleted)
+                    let data: Data
+                    do {
+                        data = try Data(contentsOf: url)
+                        print("📄 Read \(data.count) bytes from file")
+                    } catch {
+                        print("❌ Error reading file: \(error)")
+                        return
+                    }
+
+                    // Now dispatch to main queue with the data we've already read
+                    DispatchQueue.main.async {
+                        // Check if it's a disk image
+                        if ["po", "2mg", "hdv", "dsk", "do"].contains(ext) {
+                            print("💿 Opening disk image")
+                            // Copy to temp location since the file representation is temporary
+                            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                            do {
+                                try data.write(to: tempURL)
+                                self.viewModel.loadDiskImage(from: tempURL)
+                            } catch {
+                                print("❌ Error writing temp file: \(error)")
+                            }
+                        } else {
+                            // Import file to disk with original filename
+                            let sanitized = self.sanitizeFilenameForProDOS(filename)
+                            print("📄 Importing as: \(sanitized)")
+
+                            // Determine file type based on extension
+                            let fileType: UInt8
+                            switch ext {
+                            case "s", "asm", "src":
+                                fileType = 0x04  // TXT - source code as text
+                            case "txt", "text":
+                                fileType = 0x04  // TXT
+                            case "bas":
+                                fileType = 0x04  // TXT for BASIC source (not tokenized)
+                            default:
+                                fileType = 0x04  // Default to TXT
+                            }
+
+                            self.viewModel.importRawData(data, filename: sanitized, fileType: fileType, auxType: 0)
+                        }
+                    }
+                }
+                return true
+            }
         }
-        
+
         // Handle drop from other pane (String-based transfer via Data)
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                print("🔄 Handling inter-pane drop (plaintext)")
+                // Check if this might be an inter-pane transfer by checking suggestedName
+                let suggestedName = provider.suggestedName
+                if suggestedName == "probrowse-entries" {
+                    print("🔄 Handling inter-pane drop (plaintext with probrowse marker)")
+                } else {
+                    print("🔄 Handling plainText drop - suggestedName: \(suggestedName ?? "nil")")
+                }
+
                 provider.loadDataRepresentation(forTypeIdentifier: UTType.plainText.identifier) { (data, error) in
                     DispatchQueue.main.async {
                         if let error = error {
                             print("❌ Error loading data: \(error)")
                             return
                         }
-                        
+
                         guard let data = data else {
                             print("❌ No data received")
                             return
                         }
-                        
+
                         print("✅ Got data (\(data.count) bytes)")
-                        
+
                         if let jsonString = String(data: data, encoding: .utf8) {
                             print("✅ Converted to string (\(jsonString.count) chars)")
                             print("   First 100 chars: \(String(jsonString.prefix(100)))")
-                            
+
+                            // First try to decode as inter-pane transfer (JSON)
                             do {
                                 let entries = try JSONDecoder().decode([DiskCatalogEntry].self, from: data)
-                                print("✅ Decoded \(entries.count) entries")
+                                print("✅ Decoded \(entries.count) entries - inter-pane transfer")
                                 for entry in entries {
                                     print("   - \(entry.name)")
                                 }
                                 viewModel.importEntries(entries, from: targetViewModel)
                             } catch {
-                                print("❌ JSON Decoding error: \(error)")
+                                // Not JSON - this is probably a text file being dropped from Finder
+                                // But we should have already handled this via loadFileRepresentation above
+                                print("⚠️ Not JSON and not handled by file representation")
+                                print("   This may be pasted text - importing as PASTED.TXT")
+
+                                let sanitized = "PASTED.TXT"
+                                viewModel.importRawData(data, filename: sanitized, fileType: 0x04, auxType: 0)
                             }
                         } else {
                             print("❌ Failed to convert data to string")
@@ -507,6 +598,38 @@ struct DiskBrowserPane: View {
         
         print("❌ No valid drop data found")
         return false
+    }
+
+    /// Convert a filename to ProDOS-compatible format
+    private func sanitizeFilenameForProDOS(_ filename: String) -> String {
+        // Get base name and extension
+        let url = URL(fileURLWithPath: filename)
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+
+        // Convert to uppercase and filter valid characters
+        var sanitized = baseName.uppercased()
+            .replacingOccurrences(of: " ", with: ".")
+            .replacingOccurrences(of: "_", with: ".")
+            .replacingOccurrences(of: "-", with: ".")
+            .filter { $0.isLetter || $0.isNumber || $0 == "." }
+
+        // Add extension if present
+        if !ext.isEmpty {
+            let sanitizedExt = ext.uppercased()
+                .filter { $0.isLetter || $0.isNumber }
+            if !sanitizedExt.isEmpty {
+                sanitized += "." + sanitizedExt
+            }
+        }
+
+        // Ensure not empty
+        if sanitized.isEmpty {
+            sanitized = "IMPORTED"
+        }
+
+        // ProDOS max filename is 15 characters
+        return String(sanitized.prefix(15))
     }
 }
 

@@ -86,20 +86,127 @@ class DiskPaneViewModel: ObservableObject {
             print("Failed to access security scoped resource")
             return
         }
-        
+
         defer { url.stopAccessingSecurityScopedResource() }
-        
+
         do {
-            let originalData = try Data(contentsOf: url)
+            var originalData = try Data(contentsOf: url)
             self.diskImagePath = url
-            
+
             // Reset navigation
             navigateToRoot()
-            
-            let isDSK = url.pathExtension.lowercased() == "dsk"
-            let isDO = url.pathExtension.lowercased() == "do"
-            let isVOL = url.pathExtension.lowercased() == "vol"
-            
+
+            let ext = url.pathExtension.lowercased()
+            let isDSK = ext == "dsk"
+            let isDO = ext == "do"
+            let isVOL = ext == "vol"
+
+            // Check for Binary II archives (.bny, .bqy, .bii)
+            // Note: Binary II can also wrap NuFX archives (.bxy)
+            if ["bny", "bqy", "bii"].contains(ext) || BinaryIIArchive.isBinaryII(originalData) {
+                // Check if it's a Binary II wrapping NuFX (common .bxy pattern)
+                if !NuFXArchive.isNuFXArchive(originalData) {
+                    print("📦 Detected Binary II archive: \(url.lastPathComponent)")
+
+                    let archive = BinaryIIArchive(data: originalData)
+                    do {
+                        try archive.parse()
+                        print("   Found \(archive.entries.count) entries")
+
+                        // Extract first disk image-like file
+                        for entry in archive.entries {
+                            if let extracted = archive.extractData(for: entry) {
+                                // Check if it's a plausible disk image
+                                if [143360, 163840, 819200, 1638400].contains(extracted.count) ||
+                                   entry.filename.lowercased().hasSuffix(".dsk") ||
+                                   entry.filename.lowercased().hasSuffix(".po") {
+                                    print("✅ Extracted disk image: \(entry.filename) (\(extracted.count) bytes)")
+                                    originalData = extracted
+                                    break
+                                }
+                            }
+                        }
+                    } catch {
+                        print("❌ Binary II extraction failed: \(error)")
+                    }
+                }
+            }
+
+            // Check for NuFX archives (.sdk, .shk, .bxy)
+            let isNuFXExtension = ["sdk", "shk", "bxy"].contains(ext)
+            if isNuFXExtension || NuFXArchive.isNuFXArchive(originalData) {
+                print("📦 Detected NuFX archive: \(url.lastPathComponent)")
+
+                // Parse the archive
+                let archive = NuFXArchive(data: originalData)
+                do {
+                    try archive.parse()
+
+                    // Find disk image or first data file
+                    for record in archive.records {
+                        if let diskThread = record.threads.first(where: { $0.isDiskImage }),
+                           let extracted = try? archive.extractThread(diskThread) {
+                            print("✅ Extracted disk image: \(record.filename) (\(extracted.count) bytes)")
+                            originalData = extracted
+                            break
+                        } else if let dataThread = record.dataForkThread,
+                                  record.threads.first(where: { $0.isDiskImage }) == nil {
+                            // No disk image thread, but has data - try extracting first file
+                            if let extracted = try? archive.extractThread(dataThread) {
+                                // Check if it looks like a disk image (140K, 800K, etc.)
+                                if [143360, 819200, 163840].contains(extracted.count) {
+                                    print("✅ Extracted data as disk image: \(record.filename) (\(extracted.count) bytes)")
+                                    originalData = extracted
+                                    break
+                                }
+                            }
+                        }
+                    }
+
+                    if archive.records.isEmpty {
+                        print("❌ NuFX archive contains no records")
+                    }
+                } catch {
+                    print("❌ NuFX extraction failed: \(error)")
+                }
+            }
+
+            // Check for gzip compressed files (.gz)
+            if ext == "gz" || GzipArchive.isGzip(originalData) {
+                print("📦 Detected gzip archive: \(url.lastPathComponent)")
+                if let decompressed = GzipArchive.decompress(originalData) {
+                    print("✅ Decompressed gzip: \(decompressed.count) bytes")
+                    originalData = decompressed
+                } else {
+                    print("❌ Gzip decompression failed")
+                }
+            }
+
+            // Check for ZIP archives (.zip)
+            if ext == "zip" || ZipArchive.isZip(originalData) {
+                print("📦 Detected ZIP archive: \(url.lastPathComponent)")
+                let entries = ZipArchive.parseEntries(from: originalData)
+                print("   Found \(entries.count) entries")
+
+                // Find first disk image-like file
+                for entry in entries {
+                    if !entry.filename.hasSuffix("/") {
+                        if let extracted = ZipArchive.extractEntry(entry, from: originalData) {
+                            // Check if it's a plausible disk image size
+                            if [143360, 163840, 819200, 1638400].contains(extracted.count) ||
+                               entry.filename.lowercased().hasSuffix(".dsk") ||
+                               entry.filename.lowercased().hasSuffix(".po") ||
+                               entry.filename.lowercased().hasSuffix(".2mg") ||
+                               entry.filename.lowercased().hasSuffix(".do") {
+                                print("✅ Extracted disk image: \(entry.filename) (\(extracted.count) bytes)")
+                                originalData = extracted
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+
             // For .vol files - try UCSD Pascal first
             if isVOL {
                 print("📀 Loading .vol file: \(url.lastPathComponent)")
@@ -552,7 +659,73 @@ class DiskPaneViewModel: ObservableObject {
             print("Error importing file: \(error)")
         }
     }
-    
+
+    /// Import raw data as a file (for drag and drop of external text/data)
+    func importRawData(_ data: Data, filename: String, fileType: UInt8, auxType: UInt16) {
+        guard catalog != nil,
+              let imagePath = diskImagePath else {
+            print("❌ No disk loaded")
+            return
+        }
+
+        // UCSD Pascal is read-only
+        if isUCSDPascal {
+            print("❌ Cannot write to UCSD Pascal disk (read-only)")
+            return
+        }
+
+        // Sanitize filename for ProDOS/DOS 3.3
+        var sanitizedName = filename.uppercased()
+            .replacingOccurrences(of: " ", with: ".")
+            .filter { $0.isLetter || $0.isNumber || $0 == "." }
+
+        if sanitizedName.isEmpty {
+            sanitizedName = "IMPORTED"
+        }
+
+        // Truncate to max length
+        let maxLen = isDOS33 ? 30 : 15
+        sanitizedName = String(sanitizedName.prefix(maxLen))
+
+        print("📋 Importing raw data as: \(sanitizedName) (\(data.count) bytes, type $\(String(format: "%02X", fileType)))")
+
+        if isDOS33 {
+            DOS33Writer.shared.addFile(
+                diskImagePath: imagePath,
+                fileName: sanitizedName,
+                fileData: data,
+                fileType: fileType,
+                auxType: auxType
+            ) { success, message in
+                if success {
+                    print("✅ File imported successfully (DOS 3.3)")
+                    DispatchQueue.main.async {
+                        self.loadDiskImage(from: imagePath)
+                    }
+                } else {
+                    print("❌ Failed to import: \(message)")
+                }
+            }
+        } else {
+            ProDOSWriter.shared.addFile(
+                diskImagePath: imagePath,
+                fileName: sanitizedName,
+                fileData: data,
+                fileType: fileType,
+                auxType: auxType
+            ) { success, message in
+                if success {
+                    print("✅ File imported successfully (ProDOS)")
+                    DispatchQueue.main.async {
+                        self.loadDiskImage(from: imagePath)
+                    }
+                } else {
+                    print("❌ Failed to import: \(message)")
+                }
+            }
+        }
+    }
+
     func importEntries(_ entries: [DiskCatalogEntry], from sourceVM: DiskPaneViewModel) {
         guard let targetImagePath = diskImagePath,
               let sourceImagePath = sourceVM.diskImagePath else { return }
