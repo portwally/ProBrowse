@@ -333,8 +333,9 @@ class UCSDPascalParser {
             // Bytes used in last block
             let bytesInLastBlock = Int(UInt16(allDirData[entryOffset + 22]) | (UInt16(allDirData[entryOffset + 23]) << 8))
             
-            // Calculate file size
+            // Calculate file size (with overflow protection)
             let numBlocks = lastBlock - firstBlock
+            guard numBlocks > 0 && bytesInLastBlock <= BLOCK_SIZE else { continue }
             let fileSize = (numBlocks - 1) * BLOCK_SIZE + bytesInLastBlock
             
             // Parse modification date

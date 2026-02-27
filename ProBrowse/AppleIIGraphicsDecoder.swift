@@ -871,6 +871,7 @@ class PackedSHRDecoder {
                 let color1 = colorIndex1 < palette.count ? palette[colorIndex1] : (0, 0, 0)
 
                 let bufIdx1 = (y * width + x) * 4
+                guard bufIdx1 + 3 < rgbaBuffer.count else { continue }
                 rgbaBuffer[bufIdx1] = color1.0
                 rgbaBuffer[bufIdx1 + 1] = color1.1
                 rgbaBuffer[bufIdx1 + 2] = color1.2
@@ -880,6 +881,7 @@ class PackedSHRDecoder {
                 let color2 = colorIndex2 < palette.count ? palette[colorIndex2] : (0, 0, 0)
 
                 let bufIdx2 = (y * width + x + 1) * 4
+                guard bufIdx2 + 3 < rgbaBuffer.count else { continue }
                 rgbaBuffer[bufIdx2] = color2.0
                 rgbaBuffer[bufIdx2 + 1] = color2.1
                 rgbaBuffer[bufIdx2 + 2] = color2.2

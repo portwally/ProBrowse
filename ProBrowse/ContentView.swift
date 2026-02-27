@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showingCreateImageSheet = false
     @State private var showingInspectorSheet = false
     @State private var inspectorPane: PaneLocation? = nil
+    @State private var keyboardMonitor: Any? = nil
     
     enum PaneLocation {
         case left, right
@@ -94,9 +95,17 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.createDiskImage)) { _ in
             showingCreateImageSheet = true
         }
+        .onDisappear {
+            if let monitor = keyboardMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyboardMonitor = nil
+            }
+        }
         .onAppear {
+            // Guard against duplicate registration
+            if keyboardMonitor != nil { return }
             // Setup keyboard shortcuts
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 let focusManager = FocusManager.shared
                 
                 // Determine active and target view models based on focus

@@ -629,27 +629,27 @@ class DiskImageParser {
                     // If Master Index entry is 0, it represents 256 * 512 bytes of zeros.
                     
                     if indexBlockNum == 0 {
-                         // Huge sparse hole (128KB)
-                         // We only append if we haven't passed EOF logic later, but for simplicity here:
-                         // Ideally we shouldn't alloc 128KB ram if unnecessary, but let's be safe.
-                         // Actually, strict parsing stops at EOF.
-                         // Let's iterate standard logic.
-                         let sparseChunk = Data(repeating: 0, count: 512 * 256)
+                         // Sparse hole: only append zeros up to EOF to avoid excessive allocation
+                         let remaining = eof - fileData.count
+                         if remaining <= 0 { break }
+                         let chunkSize = min(512 * 256, remaining)
+                         let sparseChunk = Data(repeating: 0, count: chunkSize)
                          fileData.append(sparseChunk)
                          continue
                     }
                     
                     if let indexBlock = getBlockData(from: data, blockIndex: indexBlockNum, isDOSOrder: isDOSOrder) {
                         for j in 0..<256 {
+                            if fileData.count >= eof { break }
                             let dataBlockNum = Int(indexBlock[j]) | (Int(indexBlock[256 + j]) << 8)
-                            
+
                             if dataBlockNum == 0 {
-                                fileData.append(Data(repeating: 0, count: 512))
+                                fileData.append(Data(repeating: 0, count: min(512, eof - fileData.count)))
                             } else {
                                 if let dataBlock = getBlockData(from: data, blockIndex: dataBlockNum, isDOSOrder: isDOSOrder) {
                                     fileData.append(dataBlock)
                                 } else {
-                                    fileData.append(Data(repeating: 0, count: 512))
+                                    fileData.append(Data(repeating: 0, count: min(512, eof - fileData.count)))
                                 }
                             }
                         }

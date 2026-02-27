@@ -149,7 +149,7 @@ class MacPaintDecoder {
                 src += 1
 
                 for _ in 0..<count {
-                    if dst < dstEnd {
+                    if dst < dstEnd && dst < dstBuffer.count {
                         dstBuffer[dst] = value
                         dst += 1
                     }
@@ -158,7 +158,7 @@ class MacPaintDecoder {
                 // Literal bytes: copy (flagByte + 1) bytes
                 let count = Int(flagByte) + 1
                 for _ in 0..<count {
-                    if src < data.count && dst < dstEnd {
+                    if src < data.count && dst < dstEnd && dst < dstBuffer.count {
                         dstBuffer[dst] = data[src]
                         src += 1
                         dst += 1
@@ -168,7 +168,7 @@ class MacPaintDecoder {
         }
 
         // Pad remaining bytes with 0 (white)
-        while dst < dstEnd {
+        while dst < dstEnd && dst < dstBuffer.count {
             dstBuffer[dst] = 0
             dst += 1
         }

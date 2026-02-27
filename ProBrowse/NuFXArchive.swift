@@ -769,7 +769,8 @@ class NuFXSqueeze {
                 bitBuffer >>= 1
                 bitsInBuffer -= 1
 
-                // Follow tree
+                // Follow tree (with bounds check for malformed archives)
+                guard node >= 0 && node < tree.count else { break }
                 if bit == 0 {
                     node = Int(tree[node].left)
                 } else {

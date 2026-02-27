@@ -236,7 +236,10 @@ class DOS33Writer {
             if track == VTOC_TRACK { continue }
             
             let trackBitmapOffset = bitmapOffset + (track * 4)
-            
+
+            // Bounds check: ensure 4 bitmap bytes are within disk data
+            guard trackBitmapOffset + 3 < diskData.count else { continue }
+
             // Read 4-byte bitmap for this track (little-endian)
             var bitmap = UInt32(diskData[trackBitmapOffset])
             bitmap |= UInt32(diskData[trackBitmapOffset + 1]) << 8
