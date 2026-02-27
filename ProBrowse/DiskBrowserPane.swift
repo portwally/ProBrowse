@@ -201,7 +201,7 @@ struct DiskBrowserPane: View {
         }
         .background(
             Color.clear
-                .onDrop(of: [.fileURL, .plainText], isTargeted: $isTargeted) { providers in
+                .onDrop(of: [.fileURL, .plainText, .item, .data], isTargeted: $isTargeted) { providers in
                     handleDrop(providers: providers)
                 }
         )
@@ -391,7 +391,7 @@ struct DiskBrowserPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             Color.clear
-                .onDrop(of: [.fileURL, .item, .data], isTargeted: $isTargeted) { providers in
+                .onDrop(of: [.fileURL, .plainText, .item, .data], isTargeted: $isTargeted) { providers in
                     handleDrop(providers: providers)
                 }
         )
@@ -400,56 +400,108 @@ struct DiskBrowserPane: View {
     // MARK: - Drop Handler
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        // Handle drop from Finder (file URLs)
+        print("📥 DROP: Received \(providers.count) providers")
+        for (i, provider) in providers.enumerated() {
+            print("   Provider \(i): \(provider.registeredTypeIdentifiers)")
+        }
+
+        // PRIORITY 1: Check for inter-pane transfer FIRST (JSON encoded as plainText)
+        // This MUST come before fileURL check because inter-pane drags use plainText
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                // Check if this is NOT a file URL (pure plainText from inter-pane drag)
+                if !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                    print("📋 DROP: Found plainText without fileURL - checking for inter-pane JSON")
+                    provider.loadDataRepresentation(forTypeIdentifier: UTType.plainText.identifier) { (data, error) in
+                        DispatchQueue.main.async {
+                            guard error == nil, let data = data else {
+                                print("❌ DROP: Failed to load plainText data")
+                                return
+                            }
+
+                            // Try to decode as inter-pane transfer (JSON array of DiskCatalogEntry)
+                            if let entries = try? JSONDecoder().decode([DiskCatalogEntry].self, from: data) {
+                                print("✅ DROP: Decoded \(entries.count) entries from inter-pane JSON")
+                                self.viewModel.importEntries(entries, from: self.targetViewModel)
+                            } else {
+                                // Not JSON - treat as pasted text
+                                print("📝 DROP: Not JSON, treating as pasted text")
+                                self.viewModel.importRawData(data, filename: "PASTED.TXT", fileType: 0x04, auxType: 0)
+                            }
+                        }
+                    }
+                    return true
+                }
+            }
+        }
+
+        // PRIORITY 2: Handle drop from Finder (file URLs)
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                print("📁 DROP: Found fileURL provider")
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { (urlData, error) in
                     DispatchQueue.main.async {
                         guard error == nil,
                               let data = urlData as? Data,
-                              let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                              let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                            print("❌ DROP: Failed to load fileURL")
+                            return
+                        }
+
+                        let ext = url.pathExtension.lowercased()
+                        print("📁 DROP: Loaded file: \(url.lastPathComponent), ext: \(ext)")
 
                         // Check if it's a disk image to open
-                        if ["po", "2mg", "hdv", "dsk", "do"].contains(url.pathExtension.lowercased()) {
-                            viewModel.loadDiskImage(from: url)
+                        if ["po", "2mg", "hdv", "dsk", "do"].contains(ext) {
+                            print("💾 DROP: Opening as disk image")
+                            self.viewModel.loadDiskImage(from: url)
                         } else {
-                            viewModel.importFile(from: url)
+                            print("📄 DROP: Importing as file")
+                            self.viewModel.importFile(from: url)
                         }
                     }
                 }
                 return true
             }
+        }
 
-            // Handle files dropped by content type (e.g., public.assembly-source, public.source-code)
+        // PRIORITY 3: Handle files dropped by content type (e.g., public.assembly-source)
+        // Only match "source" - NOT "text" or "plain" (those are handled above)
+        for provider in providers {
             let contentTypes = provider.registeredTypeIdentifiers
             let isSourceFile = contentTypes.contains { typeId in
-                typeId.contains("source") || typeId.contains("text") || typeId.contains("plain")
+                typeId.contains("source")
             }
 
             if isSourceFile, let firstType = contentTypes.first {
-                // Use loadFileRepresentation to get the actual file URL
-                // IMPORTANT: The temporary file is deleted when callback returns, so read data BEFORE dispatching
+                print("📝 DROP: Found source file with type: \(firstType)")
                 provider.loadFileRepresentation(forTypeIdentifier: firstType) { url, error in
-                    guard error == nil, let url = url else { return }
+                    guard error == nil, let url = url else {
+                        print("❌ DROP: Failed to load source file representation")
+                        return
+                    }
 
                     let filename = url.lastPathComponent
                     let ext = url.pathExtension.lowercased()
 
                     // Read the file data IMMEDIATELY (before temp file is deleted)
-                    guard let data = try? Data(contentsOf: url) else { return }
+                    guard let data = try? Data(contentsOf: url) else {
+                        print("❌ DROP: Failed to read source file data")
+                        return
+                    }
 
-                    // Now dispatch to main queue with the data we've already read
                     DispatchQueue.main.async {
                         // Check if it's a disk image
                         if ["po", "2mg", "hdv", "dsk", "do"].contains(ext) {
-                            // Copy to temp location since the file representation is temporary
                             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
                             if let _ = try? data.write(to: tempURL) {
+                                print("💾 DROP: Opening source file as disk image")
                                 self.viewModel.loadDiskImage(from: tempURL)
                             }
                         } else {
                             // Import file to disk with original filename
                             let sanitized = self.sanitizeFilenameForProDOS(filename)
+                            print("📄 DROP: Importing source file as: \(sanitized)")
 
                             // Determine file type based on extension
                             let fileType: UInt8
@@ -472,43 +524,27 @@ struct DiskBrowserPane: View {
             }
         }
 
-        // Handle drop from other pane (String-based transfer via Data)
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                provider.loadDataRepresentation(forTypeIdentifier: UTType.plainText.identifier) { (data, error) in
-                    DispatchQueue.main.async {
-                        guard error == nil, let data = data else { return }
-
-                        if let _ = String(data: data, encoding: .utf8) {
-                            // First try to decode as inter-pane transfer (JSON)
-                            if let entries = try? JSONDecoder().decode([DiskCatalogEntry].self, from: data) {
-                                viewModel.importEntries(entries, from: targetViewModel)
-                            } else {
-                                // Not JSON - this may be pasted text
-                                viewModel.importRawData(data, filename: "PASTED.TXT", fileType: 0x04, auxType: 0)
-                            }
-                        }
-                    }
-                }
-                return true
-            }
-        }
-
-        // Old method - keep for backward compatibility
+        // PRIORITY 4: Legacy method - keep for backward compatibility
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier("com.probrowse.entries") {
+                print("📦 DROP: Found legacy com.probrowse.entries")
                 provider.loadDataRepresentation(forTypeIdentifier: "com.probrowse.entries") { data, error in
                     DispatchQueue.main.async {
                         guard error == nil,
                               let data = data,
-                              let wrapper = try? JSONDecoder().decode(DraggedEntriesWrapper.self, from: data) else { return }
-                        viewModel.importEntries(wrapper.entries, from: targetViewModel)
+                              let wrapper = try? JSONDecoder().decode(DraggedEntriesWrapper.self, from: data) else {
+                            print("❌ DROP: Failed to decode legacy entries")
+                            return
+                        }
+                        print("✅ DROP: Decoded \(wrapper.entries.count) legacy entries")
+                        self.viewModel.importEntries(wrapper.entries, from: self.targetViewModel)
                     }
                 }
                 return true
             }
         }
 
+        print("⚠️ DROP: No matching handler found")
         return false
     }
 
